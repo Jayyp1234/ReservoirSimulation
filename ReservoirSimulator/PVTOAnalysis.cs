@@ -1,13 +1,14 @@
 ﻿using SepalSolver;
-using System.Drawing.Drawing2D;
 using System.Runtime.CompilerServices;
 using static ReservoirSimulator.Math;
 
 namespace ReservoirSimulator
 {
-    public readonly struct PvtoResult(double rsBase, double rsExponent, double rsRSquared,
-                      double boBase, double boExponent, double boRSquared,
-                      double viscBase, double viscExponent, double viscRSquared)
+    public readonly struct PvtoResult(
+        double rsBase, double rsExponent, double rsRSquared,
+        double boBase, double boExponent, double boRSquared,
+        double viscBase, double viscExponent, double viscRSquared,
+        double undersatCompressibility = 0.0, double undersatViscosibility = 0.0)
     {
         // Raw Coefficients held as raw fields (Blittable, ultra-lean)
         public readonly double RsBase = rsBase;
@@ -22,11 +23,21 @@ namespace ReservoirSimulator
         public readonly double ViscExponent = viscExponent;
         public readonly double ViscRSquared = viscRSquared;
 
-        // High-Performance Inlined Mathematical Models
+        // Undersaturated sensitivities wrt (P - Pbub) at fixed Rs
+        public readonly double UndersatCompressibility = undersatCompressibility;
+        public readonly double UndersatViscosibility = undersatViscosibility;
+
+        // High-Performance Inlined Mathematical Models (Saturated Bubble-Point Curve)
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluateRs<T>(ADiff<T> p) where T : struct, IVectorND<T>
         {
             return RsBase * Pow(p, RsExponent);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ADiff<T> EvaluateBubblePointPressure<T>(ADiff<T> rs) where T : struct, IVectorND<T>
+        {
+            return Pow(rs / RsBase, 1.0 / RsExponent);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -40,56 +51,65 @@ namespace ReservoirSimulator
         {
             return ViscBase * Exp(-ViscExponent * rs);
         }
+
+        // 2D Undersaturated Oil Extensions: (P, Rs) where P >= Pbub(Rs)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ADiff<T> EvaluateBo<T>(ADiff<T> p, ADiff<T> rs) where T : struct, IVectorND<T>
+        {
+            ADiff<T> boSat = EvaluateBo(rs);
+            ADiff<T> dpOver = p - EvaluateBubblePointPressure(rs); // 0 on bubble-point curve, > 0 when undersaturated
+            return boSat * Exp(-UndersatCompressibility * dpOver);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ADiff<T> EvaluateMuo<T>(ADiff<T> p, ADiff<T> rs) where T : struct, IVectorND<T>
+        {
+            ADiff<T> muSat = EvaluateMuo(rs);
+            ADiff<T> dpOver = p - EvaluateBubblePointPressure(rs);
+            return muSat * Exp(UndersatViscosibility * dpOver);
+        }
     }
 
-    public class PvtoRow(double rs, double pressure, double bo, double viscosity)
+    public class PvtoRow(double rs, double pressure, double bo, double viscosity, Units incomingUnit)
     {
-        public double Rs { get; set; } = rs;
-        public double Pressure { get; set; } = pressure;
-        public double Bo { get; set; } = bo;
-        public double Viscosity { get; set; } = viscosity;
+        public double Rs { get; set; } = Utility.Convert(rs, "Solution Gas-Oil Ratio (Rs)", incomingUnit, Units.FIELD);
+        public double Pressure { get; set; } = Utility.Convert(pressure, "Pressure", incomingUnit, Units.FIELD);
+        public double Bo { get; set; } = Utility.Convert(bo, "Oil Formation Volume Factor (Bo)", incomingUnit, Units.FIELD);
+        public double Viscosity { get; set; } = Utility.Convert(viscosity, "Viscosity", incomingUnit, Units.FIELD);
     }
 
     public class PVTOAnalysis
     {
-        readonly List<PvtoRow> saturatedPoints = [];
+        private readonly List<PvtoRow> saturatedPoints = [];
+        private readonly List<(PvtoRow sat, PvtoRow undersat)> undersaturatedPairs = [];
 
-        public PVTOAnalysis(List<double> _pvto)
+        public PVTOAnalysis(List<List<double>> _pvto, Units incomingUnit)
         {
-            double currentRs = -1.0;
-            PvtoRow potentialBubblePoint = null;
-
-            for (int i = 0; i < _pvto.Count / 4; i++)
+            for (int i = 0; i < _pvto.Count; i++)
             {
-                double rs = _pvto[4*i+0];
-                double p = _pvto[4*i+1];
-                double bo = _pvto[4*i+2];
-                double mu = _pvto[4*i+3];
+                var pvto = _pvto[i];
+                if (pvto.Count < 4) continue;
 
-                // When a new Rs block is encountered
-                if (Abs(rs - currentRs) > 1e-5)
-                {
-                    if (potentialBubblePoint != null)
-                        saturatedPoints.Add(potentialBubblePoint);
-                    currentRs = rs;
-                    potentialBubblePoint = new PvtoRow(rs, p, bo, mu);
-                }
-                else
-                {
-                    // Within an Rs block, Bo increases up to the bubble point.
-                    // If Bo begins to drop, the previous row was the saturated inflection point.
-                    if (bo > potentialBubblePoint.Bo)
-                        potentialBubblePoint = new PvtoRow(rs, p, bo, mu);
+                double rs = pvto[0];
+                var chunks = pvto[1..].Chunk(3).ToList();
 
+                // First triplet [P_bub, Bo_sat, mu_o_sat] is ALWAYS the saturated bubble-point state for this Rs
+                var satChunk = chunks[0];
+                var satRow = new PvtoRow(rs, satChunk[0], satChunk[1], satChunk[2], incomingUnit);
+                saturatedPoints.Add(satRow);
+
+                // Remaining triplets [P_1, Bo_1, mu_o_1, ...] trace undersaturated oil (P > P_bub) at constant Rs
+                for (int c = 1; c < chunks.Count; c++)
+                {
+                    var uChunk = chunks[c];
+                    if (uChunk.Length < 3) continue;
+                    var undersatRow = new PvtoRow(rs, uChunk[0], uChunk[1], uChunk[2], incomingUnit);
+                    undersaturatedPairs.Add((satRow, undersatRow));
                 }
             }
-
-            // Catch the final record block
-            if (potentialBubblePoint != null)
-                saturatedPoints.Add(potentialBubblePoint);
         }
 
-        public PvtoResult Result { get; private set; }  
+        public PvtoResult Result { get; private set; }
 
         public void FitProperties()
         {
@@ -98,60 +118,77 @@ namespace ReservoirSimulator
                 throw new ArgumentException("PVTO analysis requires at least 2 distinct Rs saturation entries to regress slopes.");
             }
 
-            // Arrays for Rs, Bo, Viscosity regressions (Log-linear spaces)
+            // Synchronized lists for Bo and Viscosity regressions in log-linear space (includes Rs == 0 anchor if present)
             List<double> rsValues = [];
             List<double> lnBo = [];
             List<double> lnVisc = [];
 
-            // Arrays for Rs vs Pressure regression (Log-Log power law space)
-            List<double> lnPressure = [];
+            // Synchronized lists for Rs = alpha * P^beta in log-log space (requires P > 0 and Rs > 0)
+            List<double> lnPressureForRs = [];
             List<double> lnRs = [];
 
             foreach (var row in saturatedPoints)
             {
-                if (row.Viscosity <= 0 || row.Bo <= 0 || 
-                    row.Pressure <= 0 || row.Rs <= 0)
+                if (row.Viscosity <= 0 || row.Bo <= 0 || row.Rs < 0)
                     continue;
 
                 rsValues.Add(row.Rs);
                 lnBo.Add(Log(row.Bo));
                 lnVisc.Add(Log(row.Viscosity));
 
-                // Log transformations for Rs = alpha * P^beta
-                lnPressure.Add(Log(row.Pressure));
-                lnRs.Add(Log(row.Rs));
+                if (row.Pressure > 0 && row.Rs > 0)
+                {
+                    lnPressureForRs.Add(Log(row.Pressure));
+                    lnRs.Add(Log(row.Rs));
+                }
             }
 
             // 1. Run regressions for fluid properties driven by Rs
-            var (mBo, bBo, rSqBo) = LinearRegression(rsValues, lnBo);
-            var (mVisc, bVisc, rSqVisc) = LinearRegression(rsValues, lnVisc);
+            var (mBo, bBo, rSqBo) = Utility.LinearRegression(rsValues, lnBo);
+            var (mVisc, bVisc, rSqVisc) = Utility.LinearRegression(rsValues, lnVisc);
 
-            // 2. Run the log-log regression for Rs driven by Pressure along the saturation boundary
-            var (mRs, bRs, rSqRs) = LinearRegression(lnPressure, lnRs);
+            // 2. Run log-log regression for Rs driven by Pressure along the saturation boundary
+            var (mRs, bRs, rSqRs) = lnPressureForRs.Count >= 2
+                ? Utility.LinearRegression(lnPressureForRs, lnRs)
+                : (0.0, 0.0, 1.0);
 
-            Result = new (Exp(bRs), mRs, rSqRs, Exp(bBo), mBo, rSqBo, Exp(bVisc), -mVisc, rSqVisc );
-        }
+            // 3. Regress undersaturated oil compressibility (co) and viscosibility (cmu) from P > Pbub branches
+            double undersatCompressibility = 0.0;
+            double undersatViscosibility = 0.0;
 
-        private static (double slope, double intercept, double rSquared) LinearRegression(List<double> x, List<double> y)
-        {
-            int n = x.Count;
-            double sumX = x.Sum();
-            double sumY = y.Sum();
-            double sumXY = x.Zip(y, (xi, yi) => xi * yi).Sum();
-            double sumXSq = x.Sum(Sqr);
+            if (undersaturatedPairs.Count > 0)
+            {
+                List<double> dP = [];
+                List<double> dLnBo = [];
+                List<double> dLnVisc = [];
 
-            double denominator = (n * sumXSq) - (sumX * sumX);
-            if (Abs(denominator) < 1e-11) return (0.0, 0.0, 1.0);
+                foreach (var (sat, undersat) in undersaturatedPairs)
+                {
+                    double deltaP = undersat.Pressure - sat.Pressure;
+                    if (deltaP > 1e-12 && sat.Bo > 0 && undersat.Bo > 0 && sat.Viscosity > 0 && undersat.Viscosity > 0)
+                    {
+                        dP.Add(deltaP);
+                        dLnBo.Add(-Log(undersat.Bo / sat.Bo));
+                        dLnVisc.Add(Log(undersat.Viscosity / sat.Viscosity));
+                    }
+                }
 
-            double m = ((n * sumXY) - (sumX * sumY)) / denominator;
-            double b = (sumY - (m * sumX)) / n;
+                if (dP.Count > 0)
+                {
+                    double sumXX = dP.Sum(Sqr);
+                    if (sumXX > 1e-16)
+                    {
+                        undersatCompressibility = dP.Zip(dLnBo, (x, y) => x * y).Sum() / sumXX;
+                        undersatViscosibility = dP.Zip(dLnVisc, (x, y) => x * y).Sum() / sumXX;
+                    }
+                }
+            }
 
-            double yMean = sumY / n;
-            double ssTot = y.Select(yi => Sqr(yi - yMean)).Sum();
-            double ssRes = y.Zip(x, (yi, xi) => Sqr(yi - (m * xi + b))).Sum();
-            double rSq = ssTot > 0 ? 1.0 - (ssRes / ssTot) : 1.0;
-
-            return (m, b, rSq);
+            Result = new PvtoResult(
+                lnPressureForRs.Count >= 2 ? Exp(bRs) : 0.0, mRs, rSqRs,
+                Exp(bBo), mBo, rSqBo,
+                Exp(bVisc), -mVisc, rSqVisc,
+                undersatCompressibility, undersatViscosibility);
         }
     }
 }

@@ -1,26 +1,26 @@
 ﻿using SepalSolver;
-using System;
-using System.Collections.Generic;
+using static SepalSolver.Math;
 using System.Runtime.CompilerServices;
 
 namespace ReservoirSimulator
 {
     public static class ReservoirJacobian
     {
-        public static (int[] col_index, int[] row_ptr, double[] values) Create<T>(
+        public static (int totalDofs, int[] col_index, int[] row_ptr, double[] values) Create<T>(
             int nc,          // 2 for Vector4d, 3 for Vector6d, 4 for Vector8d
             IReadOnlyList<Grid<T>> Grids,
             IReadOnlyList<Well<T>> Wells) where T : struct, IVectorND<T>
         {
             int numWells = Wells.Count;
             int numActiveGrids = Grids.Count(grid => grid.isActive);
-            int totalDofs = nc * numActiveGrids + 2 * numWells;
+            int numActiveWells = Wells.Count(well => well.isActive);
+            int totalDofs = nc * numActiveGrids + 2 * numActiveWells;
 
             // 1. Exact capacity estimation
             int totalGridBlocks = numActiveGrids; // Diagonal blocks
             foreach (var mgrid in Grids)
             {
-                if (!mgrid.isActive) continue; // Corrected: skip inactive cells
+                if (!mgrid.isActive) continue;
 
                 foreach (var face in mgrid.Faces)
                 {
@@ -40,10 +40,6 @@ namespace ReservoirSimulator
                 }
             }
 
-            // Exact NNZ capacity:
-            // - Grid blocks: totalGridBlocks * (nc * nc)
-            // - Well internal blocks: numWells * 4 (2x2 closure block)
-            // - Perforation blocks: totalActivePerfs * (2 * nc [Grid-Well] + 2 * nc [Well-Grid]) = totalActivePerfs * (4 * nc)
             int capacity = (totalGridBlocks * nc * nc)
                          + (numWells * 4)
                          + (totalActivePerfs * 4 * nc);
@@ -51,138 +47,92 @@ namespace ReservoirSimulator
             List<int> I = new(capacity);
             List<int> J = new(capacity);
 
-            // 2. Exact AddBlock mechanics (MOL style)
             void AddBlock(int i, int j)
             {
                 int I0 = i * nc;
                 int J0 = j * nc;
-
                 for (int ii = 0; ii < nc; ii++)
-                {
                     for (int jj = 0; jj < nc; jj++)
                     {
                         I.Add(I0 + ii);
                         J.Add(J0 + jj);
                     }
-                }
             }
 
-            // Coupling: Grid cell equation depends on Well variables (Nc x 2)
             void AddGridWellBlock(int gridActiveIdx, int wellIdx)
             {
                 int I0 = gridActiveIdx * nc;
                 int J0 = nc * numActiveGrids + 2 * wellIdx;
-
                 for (int ii = 0; ii < nc; ii++)
-                {
                     for (int jj = 0; jj < 2; jj++)
                     {
                         I.Add(I0 + ii);
                         J.Add(J0 + jj);
                     }
-                }
             }
 
-            // Coupling: Well rate equation depends on Grid variables (2 x Nc)
-            void AddWellGridBlock(int wellIdx, int gridActiveIdx)
+            void AddWellGridBlock(int activeWellIdx, int gridActiveIdx)
             {
-                int I0 = nc * numActiveGrids + 2 * wellIdx;
+                int I0 = nc * numActiveGrids + 2 * activeWellIdx;
                 int J0 = gridActiveIdx * nc;
-
                 for (int ii = 0; ii < 2; ii++)
-                {
                     for (int jj = 0; jj < nc; jj++)
                     {
                         I.Add(I0 + ii);
                         J.Add(J0 + jj);
                     }
-                }
             }
 
-            // Well internal closure block (2 x 2)
-            void AddWellInternalBlock(int wellIdx)
+            void AddWellInternalBlock(int activeWellIdx)
             {
-                int I0 = nc * numActiveGrids + 2 * wellIdx;
-
+                int I0 = nc * numActiveGrids + 2 * activeWellIdx;
                 for (int ii = 0; ii < 2; ii++)
-                {
                     for (int jj = 0; jj < 2; jj++)
                     {
                         I.Add(I0 + ii);
                         J.Add(I0 + jj);
                     }
-                }
             }
 
-            // ---------------------------------------------------------
             // 3. Grid Cells and Face Neighbor Connections
-            // ---------------------------------------------------------
             foreach (var mgrid in Grids)
             {
                 if (!mgrid.isActive) continue;
                 int i = mgrid.ActiveIndex;
 
-                // Diagonal accumulation block (i, i)
                 AddBlock(i, i);
 
-                // Connected face neighbor blocks (i, j)
                 foreach (var face in mgrid.Faces)
                 {
                     foreach (int c in face.GridIndices)
                     {
                         var ngrid = Grids[c];
                         if (!ngrid.isActive) continue;
-                        int j = ngrid.ActiveIndex;
-                        AddBlock(i, j);
+                        AddBlock(i, ngrid.ActiveIndex);
                     }
                 }
             }
 
-            // ---------------------------------------------------------
-            // 4. Wells Internal Closure and Perforations
-            // ---------------------------------------------------------
-            for (int w = 0; w < numWells; w++)
+            // 4. Active Wells Internal Closure and Perforations
+            foreach (var well in Wells)
             {
-                var well = Wells[w];
-
-                // Well internal block (2 x 2)
-                AddWellInternalBlock(w);
-
-                // Perforation couplings
+                if(!well.isActive) continue;
+                AddWellInternalBlock(well.ActiveIndex);
                 foreach (int m in well.PerfNatIndex)
                 {
                     var mgrid = Grids[m];
                     if (!mgrid.isActive) continue;
                     int i = mgrid.ActiveIndex;
 
-                    AddGridWellBlock(i, w);
-                    AddWellGridBlock(w, i);
+                    AddGridWellBlock(i, well.ActiveIndex);
+                    AddWellGridBlock(well.ActiveIndex, i);
                 }
             }
 
-            // Match your SepalSolver constructor
-            double[] ones = SepalSolver.Math.Ones(I.Count);
+            double[] ones = Ones(I.Count);
             var jac = new SparseMatrix(I, J, ones, totalDofs, totalDofs);
-            
-
-            string filePath = "C:\\Users\\lateef.a.kareem\\Documents\\AbimbolaPeter\\output.m";
-
-            // Open the file stream and redirect standard output
-            using (var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write))
-            using (var writer = new StreamWriter(fileStream))
-            {
-                // AutoFlush ensures text writes to disk immediately without waiting for buffer fills
-                writer.AutoFlush = true;
-                Console.SetOut(writer);
-                Console.WriteLine($"I = [{string.Join(", ", I)}];");
-                Console.WriteLine($"J = [{string.Join(", ", J)}];");
-                Console.WriteLine($"V = [{string.Join(", ", ones)}];");
-                Console.WriteLine("I = I+1; J = J + 1;");
-                Console.WriteLine($"s = sparse(I, J, V, {totalDofs}, {totalDofs});");
-                Console.WriteLine("spy(s);");
-            }
             var crs = jac.CompressByRow();
-            return ([..crs.col_index], [..crs.row_start], [..crs.values]);
+            return (totalDofs, [.. crs.col_index], [.. crs.row_start], [.. crs.values]);
         }
 
 
@@ -244,22 +194,19 @@ namespace ReservoirSimulator
             return idx;
         }
 
-
-
-
-        public static (CellOffsets[] cellOffsets, FaceOffsets[][] faceOffsets, WellOffsets[] wellOffsets)
-    PrecomputeOffsets<T>(
-        int nc,
-        int[] row_ptr,
-        int[] col_index,
-        IReadOnlyList<Grid<T>> Grids,
-        IReadOnlyList<Well<T>> Wells) where T : struct, IVectorND<T>
+        public static (CellOffsets[] cellOffsets, FaceOffsets[][][] faceOffsets, WellOffsets[] wellOffsets) PrecomputeOffsets<T>(
+            int nc,
+            int[] row_ptr,
+            int[] col_index,
+            IReadOnlyList<Grid<T>> Grids,
+            IReadOnlyList<Well<T>> Wells) where T : struct, IVectorND<T>
         {
             int numWells = Wells.Count;
             int numActiveGrids = Grids.Count(grid => grid.isActive);
+            int numActiveWells = Wells.Count(well => well.isActive);
             var cellOffsets = new CellOffsets[numActiveGrids];
-            var faceOffsets = new FaceOffsets[Grids.Count][];
-            var wellOffsets = new WellOffsets[numWells];
+            var faceOffsets = new FaceOffsets[Grids.Count][][];
+            var wellOffsets = new WellOffsets[numActiveWells];
 
             // 1. Grid Diagonal & Face Offsets
             for (int m = 0; m < Grids.Count; m++)
@@ -268,8 +215,7 @@ namespace ReservoirSimulator
                 if (!mgrid.isActive) continue;
 
                 int i = mgrid.ActiveIndex;
-                int baseRow_i = nc * i;
-                int baseCol_i = nc * i;
+                int baseRow_i = nc * i, baseCol_i = nc * i;
 
                 // Diagonal Block (i, i)
                 var cOff = new CellOffsets(nc);
@@ -282,43 +228,50 @@ namespace ReservoirSimulator
                 }
                 cellOffsets[i] = cOff;
 
+                
                 // Faces
                 int faceCount = mgrid.Faces.Length;
-                faceOffsets[m] = new FaceOffsets[faceCount];
+                faceOffsets[m] = new FaceOffsets[faceCount][];
 
                 for (int f = 0; f < faceCount; f++)
                 {
                     var face = mgrid.Faces[f];
-                    if (face.GridIndices.Count == 0) continue;
+                    int connCount = face.GridIndices.Count;
+                    faceOffsets[m][f] = new FaceOffsets[connCount];
 
-                    int n = face.GridIndices[0];
-                    var ngrid = Grids[n];
-                    if (!ngrid.isActive) continue;
-
-                    int j = ngrid.ActiveIndex;
-                    int baseCol_j = nc * j;
-
-                    var fOff = new FaceOffsets(nc, j);
-                    for (int eq = 0; eq < nc; eq++)
+                    for (int c = 0; c < connCount; c++)
                     {
-                        for (int v = 0; v < nc; v++)
+                        int n = face.GridIndices[c];
+                        var ngrid = Grids[n];
+                        if (!ngrid.isActive) continue;
+
+                        int j = ngrid.ActiveIndex;
+                        int baseCol_j = nc * j;
+
+                        var fOff = new FaceOffsets(nc, j);
+                        for (int eq = 0; eq < nc; eq++)
                         {
-                            // Block (i, i)
-                            fOff.Self[eq * nc + v] = FindValueIndex(row_ptr, col_index, baseRow_i + eq, baseCol_i + v);
-                            // Block (i, j)
-                            fOff.Neighbor[eq * nc + v] = FindValueIndex(row_ptr, col_index, baseRow_i + eq, baseCol_j + v);
+                            for (int v = 0; v < nc; v++)
+                            {
+                                // Block (i, i)
+                                fOff.Self[eq * nc + v] = FindValueIndex(row_ptr, col_index, baseRow_i + eq, baseCol_i + v);
+                                // Block (i, j)
+                                fOff.Neighbor[eq * nc + v] = FindValueIndex(row_ptr, col_index, baseRow_i + eq, baseCol_j + v);
+                            }
                         }
+                        faceOffsets[m][f][c] = fOff;
                     }
-                    faceOffsets[m][f] = fOff;
                 }
             }
 
-            // 2. Well Offsets
-            for (int w = 0; w < numWells; w++)
+            // 2. Active Well Offsets
+            foreach (var well in Wells)
             {
-                var well = Wells[w];
-                int row_p = nc * numActiveGrids + 2 * w + 0;
-                int row_q = nc * numActiveGrids + 2 * w + 1;
+                if (!well.isActive) continue;
+
+                int wIdx = well.ActiveIndex;
+                int row_p = nc * numActiveGrids + 2 * wIdx + 0;
+                int row_q = nc * numActiveGrids + 2 * wIdx + 1;
                 int col_pwell = row_p;
                 int col_qwell = row_q;
 
@@ -351,7 +304,7 @@ namespace ReservoirSimulator
                     }
                 }
 
-                wellOffsets[w] = new WellOffsets(rpP, rpQ, rqP, rqQ, rmDPwell, rqDGrid);
+                wellOffsets[wIdx] = new WellOffsets(rpP, rpQ, rqP, rqQ, rmDPwell, rqDGrid);
             }
 
             return (cellOffsets, faceOffsets, wellOffsets);

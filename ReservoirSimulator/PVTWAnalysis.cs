@@ -29,18 +29,18 @@ namespace ReservoirSimulator
         }
     }
 
-    public class PvtwRow(double pref, double bwref, double cw, double visref, double vw)
+    public class PvtwRow(double pref, double bwref, double cw, double visref, double vw, Units incomingUnit)
     {
-        public double Pref { get; set; } = pref;
-        public double Bwref { get; set; } = bwref;
-        public double Cw { get; set; } = cw;
-        public double Visref { get; set; } = visref;
-        public double Vw { get; set; } = vw;
+        public double Pref { get; set; } = Utility.Convert(pref, "Pressure", incomingUnit, Units.FIELD);
+        public double Bwref { get; set; } = Utility.Convert(bwref, "Water Formation Volume Factor (Bw)", incomingUnit, Units.FIELD);
+        public double Cw { get; set; } = Utility.Convert(cw, "Compressibility", incomingUnit, Units.FIELD);
+        public double Visref { get; set; } = Utility.Convert(visref, "Viscosity", incomingUnit, Units.FIELD);
+        public double Vw { get; set; } = Utility.Convert(vw, "Compressibility", incomingUnit, Units.FIELD);
     }
 
-    public class PVTWAnalysis(List<double> _pvtw)
+    public class PVTWAnalysis(List<double> _pvtw, Units incomingUnit)
     {
-        private readonly PvtwRow pvtwRow = new(_pvtw[0], _pvtw[1], _pvtw[2], _pvtw[3], _pvtw[4]);
+        private readonly PvtwRow pvtwRow = new(_pvtw[0], _pvtw[1], _pvtw[2], _pvtw[3], _pvtw[4], incomingUnit);
 
         public PvtwResult Result { get; private set; }
         public void FitProperties()

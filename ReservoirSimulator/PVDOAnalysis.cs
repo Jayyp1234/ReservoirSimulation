@@ -7,13 +7,6 @@ using static ReservoirSimulator.Math;
 
 namespace ReservoirSimulator
 {
-    public class PvdoRow(double pressure, double bo, double viscosity)
-    {
-        public double Pressure { get; set; } = pressure;
-        public double Bo { get; set; } = bo;
-        public double Viscosity { get; set; } = viscosity;
-    }
-
     public readonly struct PvdoResult(double pRef, double co, double boAtPref, double cMu,
                       double viscAtPref, double boRSquared, double viscRSquared)
     {
@@ -41,10 +34,17 @@ namespace ReservoirSimulator
         }
     }
 
-    public class PVDOAnalysis(List<double> _pvdo)
+
+    public class PvdoRow(List<double> pvdo, Units incomingUnit)
     {
-        private readonly List<PvdoRow> pvdoTable = [..Enumerable.Range(0, _pvdo.Count/3).
-            Select(i => new PvdoRow(_pvdo[3*i+0], _pvdo[3*i+1], _pvdo[3*i+2]))];
+        public double Pressure { get; set; } = Utility.Convert(pvdo[0], "Pressure", incomingUnit, Units.FIELD);
+        public double Bo { get; set; } = Utility.Convert(pvdo[1], "Oil Formation Volume Factor (Bo)", incomingUnit, Units.FIELD);
+        public double Viscosity { get; set; } = Utility.Convert(pvdo[2], "Viscosity", incomingUnit, Units.FIELD);
+    }
+
+    public class PVDOAnalysis(List<List<double>> _pvdo, Units incomingUnit)
+    {
+        private readonly List<PvdoRow> pvdoTable = [.._pvdo.Select(pvdo => new PvdoRow(pvdo, incomingUnit))];
 
         public PvdoResult Result { get; private set; }
 
@@ -77,8 +77,8 @@ namespace ReservoirSimulator
             }
 
             // Run regressions in the transformed log-linear spaces
-            var (mBo, bBo, rSqBo) = LinearRegression(deltaP, lnBo);
-            var (mVisc, bVisc, rSqVisc) = LinearRegression(deltaP, lnVisc);
+            var (mBo, bBo, rSqBo) = Utility.LinearRegression(deltaP, lnBo);
+            var (mVisc, bVisc, rSqVisc) = Utility.LinearRegression(deltaP, lnVisc);
 
             // Back-transform intercepts to resolve physical units
             double co = -mBo;                      // Bo decreases with P -> co is -slope
@@ -87,28 +87,6 @@ namespace ReservoirSimulator
             double viscAtPref = Exp(bVisc);        // e^intercept_Visc
 
             Result = new(pRef, co, boAtPref, cMu, viscAtPref, rSqBo, rSqVisc);
-        }
-
-        private static (double slope, double intercept, double rSquared) LinearRegression(List<double> x, List<double> y)
-        {
-            int n = x.Count;
-            double sumX = x.Sum();
-            double sumY = y.Sum();
-            double sumXY = x.Zip(y, (xi, yi) => xi * yi).Sum();
-            double sumXSq = x.Sum(Sqr);
-
-            double denominator = (n * sumXSq) - (sumX * sumX);
-            if (Abs(denominator) < 1e-11) return (0.0, 0.0, 1.0);
-
-            double m = ((n * sumXY) - (sumX * sumY)) / denominator;
-            double b = (sumY - (m * sumX)) / n;
-
-            double yMean = sumY / n;
-            double ssTot = y.Select(yi => Sqr(yi - yMean)).Sum();
-            double ssRes = y.Zip(x, (yi, xi) => Sqr(yi - (m * xi + b))).Sum();
-            double rSq = ssTot > 0 ? 1.0 - (ssRes / ssTot) : 1.0;
-
-            return (m, b, rSq);
         }
     }
 }

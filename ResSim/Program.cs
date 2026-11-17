@@ -22,7 +22,7 @@ using System.Text;
     }
 
     // 2. Initialize your reader and track performance
-    Stopwatch timer = Stopwatch.StartNew();
+    tic();
     EclipseDataDeck parsedDeck = null;
     try
     {
@@ -44,9 +44,8 @@ using System.Text;
         Console.ResetColor();
     }
 
-    Console.WriteLine("\nPipeline idle. Press any key to close context window...");
-
     OilWaterReservoir Reservoir = new(parsedDeck);
 
     Reservoir.Simulate2Phase([0, 3650]);
+    Console.WriteLine($"Simulation took {toc()} sec");
 }

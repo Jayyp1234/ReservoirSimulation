@@ -52,18 +52,17 @@ namespace ReservoirSimulator
         }
     }
 
-    public class SwofRow(double sw, double krw, double krow, double pc)
+    public class SwofRow(List<double> swof, Units incomingUnit)
     {
-        public double Sw { get; set; } = sw;
-        public double Krw { get; set; } = krw;
-        public double Krow { get; set; } = krow;
-        public double Pc { get; set; } = pc;
+        public double Sw { get; set; } = swof[0];
+        public double Krw { get; set; } = swof[1];
+        public double Krow { get; set; } = swof[2];
+        public double Pc { get; set; } = Utility.Convert(swof[3], "Pressure", incomingUnit, Units.FIELD);
     }
 
-    public class SWOFAnalysis(List<double> _swof)
+    public class SWOFAnalysis(List<List<double>> _swof, Units incomingUnit)
     {
-        public readonly List<SwofRow> swofTable = [..Enumerable.Range(0, _swof.Count/4).
-            Select(i => new SwofRow(_swof[4*i+0], _swof[4*i+1], _swof[4*i+2], _swof[4*i+3]))];
+        public readonly List<SwofRow> swofTable = [.. _swof.Select(swof => new SwofRow(swof, incomingUnit))];
 
         public SwofResult Result { get; private set; }
 
@@ -114,9 +113,9 @@ namespace ReservoirSimulator
             }
 
             // 3. Execute Least-Squares Regressions
-            var (mPc, bPc, rSqPc) = LinearRegression(pcX, pcY);
-            var (nw, _, rSqW) = LinearRegression(krwX, krwY);
-            var (no, _, rSqO) = LinearRegression(kroX, kroY);
+            var (mPc, bPc, rSqPc) = Utility.LinearRegression(pcX, pcY);
+            var (nw, _, rSqW) = Utility.LinearRegression(krwX, krwY);
+            var (no, _, rSqO) = Utility.LinearRegression(kroX, kroY);
 
             double lambda = -1.0 / mPc;
             double pd = Exp(bPc);
@@ -124,27 +123,6 @@ namespace ReservoirSimulator
             Result = new(swi, sor, krwEndpoint, kroEndpoint, nw, no, pd, lambda, rSqPc, rSqW, rSqO);
         }
 
-        private static (double slope, double intercept, double rSquared) LinearRegression(List<double> x, List<double> y)
-        {
-            int n = x.Count;
-            if (n < 2) return (1.0, 0.0, 0.0);
-
-            double sumX = x.Sum(); double sumY = y.Sum();
-            double sumXY = x.Zip(y, (xi, yi) => xi * yi).Sum();
-            double sumXSq = x.Sum(xi => Sqr(xi));
-
-            double denominator = (n * sumXSq) - (sumX * sumX);
-            if (Abs(denominator) < 1e-11) return (1.0, 0.0, 0.0);
-
-            double m = ((n * sumXY) - (sumX * sumY)) / denominator;
-            double b = (sumY - (m * sumX)) / n;
-
-            double yMean = sumY / n;
-            double ssTot = y.Sum(yi => Sqr(yi - yMean));
-            double ssRes = y.Zip(x, (yi, xi) => Sqr(yi - (m * xi + b))).Sum();
-            double rSq = ssTot > 0 ? 1.0 - (ssRes / ssTot) : 1.0;
-
-            return (m, b, rSq);
-        }
+        
     }
 }

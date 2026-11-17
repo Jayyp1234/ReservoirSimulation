@@ -106,8 +106,13 @@ namespace ReservoirSimulator
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        
+
         public void Solve(double[] values, double[] rhs, double[] solution)
         {
+            if (rhs.Length < _n * _nrhs || solution.Length < _n * _nrhs)
+                throw new ArgumentException("RHS or solution buffer is smaller than system dimension.");
+
             // Phase 23: Numerical Factorization (Phase 22) + Forward/Backward Solve (Phase 33)
             int phase = 23;
             int error = 0;
@@ -120,12 +125,20 @@ namespace ReservoirSimulator
             fixed (double* pB = rhs)
             fixed (double* pX = solution)
             {
-                int maxfct = _maxfct, mnum = _mnum, mtype = _mtype, dim = _n, nrhs = _nrhs, msglvl = _msglvl;
+                int maxfct = _maxfct;
+                int mnum = _mnum;
+                int mtype = _mtype; // Must be 11 (Real Unsymmetric) for Reservoir Jacobian
+                int dim = _n;
+                int nrhs = _nrhs;
+                int msglvl = _msglvl;
 
                 NativeMkl.pardiso(
                     pPt, &maxfct, &mnum, &mtype, &phase, &dim,
                     pA, pIa, pJa, null, &nrhs, pIparm, &msglvl, pB, pX, &error);
             }
+
+            // Prevent GC from running finalizer (~PardisoSolver) while native MKL code is executing
+            GC.KeepAlive(this);
 
             if (error != 0)
                 throw new InvalidOperationException($"PARDISO Solve failed with error code: {error}");

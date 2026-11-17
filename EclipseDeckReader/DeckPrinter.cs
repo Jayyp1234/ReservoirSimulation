@@ -195,5 +195,22 @@ namespace EclipseDeckReader
                 Console.WriteLine($"  └─ Region {r + 1}: Parsed Numeric Values Flat Elements Count = {tables[r].Count}");
             }
         }
+
+        private static void PrintTableGroupOverview(string tableName, List<List<List<double>>> tables, string entryLabel = "Sub-Tables / Rows")
+        {
+            if (tables == null || tables.Count == 0)
+            {
+                Console.WriteLine($"* {tableName,-35}: [0 Tables Found]");
+                return;
+            }
+
+            Console.WriteLine($"* {tableName,-35}: [{tables.Count} Table Region(s) Registered]");
+            for (int r = 0; r < tables.Count; r++)
+            {
+                var region = tables[r];
+                int totalElements = region.Sum(sub => sub.Count);
+                Console.WriteLine($"  └─ Region {r + 1}: {region.Count} {entryLabel}, Total Numeric Elements = {totalElements}");
+            }
+        }
     }
 }

@@ -29,17 +29,16 @@ namespace ReservoirSimulator
         }
     }
 
-    public class PvdgRow(double pressure, double bg, double viscosity)
+    public class PvdgRow(List<double> pvdg, Units incomingUnit)
     {
-        public double Pressure { get; set; } = pressure;
-        public double Bg { get; set; } = bg;
-        public double Viscosity { get; set; } = viscosity;
+        public double Pressure { get; set; } = Utility.Convert(pvdg[0], "Pressure", incomingUnit, Units.FIELD);
+        public double Bg { get; set; } = Utility.Convert(pvdg[1], "Gas Formation Volume Factor (Bg)", incomingUnit, Units.FIELD);
+        public double Viscosity { get; set; } = Utility.Convert(pvdg[2], "Gas Viscosity", incomingUnit, Units.FIELD);
     }
 
-    public class PVDGAnalysis(List<double> _pvdg)
+    public class PVDGAnalysis(List<List<double>> _pvdg, Units incomingUnit)
     {
-        private readonly List<PvdgRow> pvdgTable = [..Enumerable.Range(0, _pvdg.Count/3).
-            Select(i => new PvdgRow(_pvdg[3*i+0], _pvdg[3*i+1], _pvdg[3*i+2]))];
+        private readonly List<PvdgRow> pvdgTable = [.. _pvdg.Select(pvdg => new PvdgRow(pvdg, incomingUnit))];
 
         public PvdgResult Result { get; private set; }
 
@@ -65,29 +64,10 @@ namespace ReservoirSimulator
                 lnViscG.Add(Log(row.Viscosity));
             }
 
-            var (mBg, bBg, rSqBg) = LinearRegression(deltaP, lnBg);
-            var (mViscG, bViscG, rSqViscG) = LinearRegression(deltaP, lnViscG);
+            var (mBg, bBg, rSqBg) = Utility.LinearRegression(deltaP, lnBg);
+            var (mViscG, bViscG, rSqViscG) = Utility.LinearRegression(deltaP, lnViscG);
 
             Result =  new(pRef, -mBg, Exp(bBg), mViscG, Exp(bViscG), rSqBg, rSqViscG);
-        }
-
-        private static (double slope, double intercept, double rSquared) LinearRegression(List<double> x, List<double> y)
-        {
-            int n = x.Count;
-            double sumX = x.Sum(); double sumY = y.Sum();
-            double sumXY = x.Zip(y, (xi, yi) => xi * yi).Sum();
-            double sumXSq = x.Sum(xi => Sqr(xi));
-
-            double denominator = (n * sumXSq) - (sumX * sumX);
-            if (Abs(denominator) < 1e-11) return (0.0, 0.0, 1.0);
-
-            double m = ((n * sumXY) - (sumX * sumY)) / denominator;
-            double b = (sumY - (m * sumX)) / n;
-
-            double yMean = sumY / n;
-            double ssTot = y.Sum(yi => Sqr(yi - yMean));
-            double ssRes = y.Zip(x, (yi, xi) => Sqr(yi - (m * xi + b))).Sum();
-            return (m, b, ssTot > 0 ? 1.0 - (ssRes / ssTot) : 1.0);
         }
     }
 }

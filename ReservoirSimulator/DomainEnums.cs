@@ -17,8 +17,8 @@
 
     public enum ConstraintType
     {
-        MAXP,
-        MINP,
+        MAX_BHP,
+        MIN_BHP,
         LRATE,
         ORATE,
         WRATE,
@@ -30,6 +30,14 @@
     {
         INJECTOR,
         PRODUCER
+    }
+
+    public enum Units
+    {
+        FIELD,
+        METRIC,
+        LAB,
+        PVT_M
     }
 
     public enum Phase

@@ -67,6 +67,14 @@ namespace EclipseDeckReader
                             deck.PhaseFlags.Add(keyword);
                             break;
 
+                        case "FIELD":
+                        case "METRIC":
+                        case "LAB":
+                        case "PVT-M":
+                            deck.UnitSystem = keyword;
+                            Console.WriteLine($"      [Runspec] Unit System configured: {deck.UnitSystem}");
+                            break;
+
                         case "PORO":
                             deck.PorosityArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
                             Console.WriteLine($"      [Data] Current PORO array status: {deck.PorosityArray.Count} entries.");
@@ -173,30 +181,52 @@ namespace EclipseDeckReader
                             ParseWconinjeBlock(tokens, ref i, deck);
                             break;
 
+
                         case "PVDO":
-                            deck.RawPvdoTables.AddRange(KeywordExtractor.ExtractMultiTableGroup(tokens, ref i, splitOnSingleSlash: true));
+                            deck.RawPvdoTables.AddRange(ParseRowStructuredRegions(tokens, ref i, columnsPerRow: 3));
+                            Console.WriteLine($"      [Data] PVDO: Loaded {deck.RawPvdoTables.Count} region table(s).");
                             break;
+
                         case "PVDG":
-                            deck.RawPvdgTables.AddRange(KeywordExtractor.ExtractMultiTableGroup(tokens, ref i, splitOnSingleSlash: true));
+                            deck.RawPvdgTables.AddRange(ParseRowStructuredRegions(tokens, ref i, columnsPerRow: 3));
+                            Console.WriteLine($"      [Data] PVDG: Loaded {deck.RawPvdgTables.Count} region table(s).");
                             break;
 
                         case "PVTO":
-                            deck.RawPvtoTables.AddRange(KeywordExtractor.ExtractMultiTableGroup(tokens, ref i, splitOnSingleSlash: false));
+                            deck.RawPvtoTables.AddRange(ParseNestedPvtRegions(tokens, ref i));
+                            Console.WriteLine($"      [Data] PVTO: Loaded {deck.RawPvtoTables.Count} region table(s).");
+                            break;
+
+                        case "PVTG":
+                            deck.RawPvtgTables.AddRange(ParseNestedPvtRegions(tokens, ref i));
+                            Console.WriteLine($"      [Data] PVTG: Loaded {deck.RawPvtgTables.Count} region table(s).");
                             break;
 
                         case "PVTW":
                             deck.RawPvtwTables.AddRange(KeywordExtractor.ExtractMultiTableGroup(tokens, ref i, splitOnSingleSlash: true));
-                            Console.WriteLine($"      [Data] Current PVTW table status: {deck.RawPvtwTables.Count} region table(s) registered.");
+                            Console.WriteLine($"      [Data] PVTW: Loaded {deck.RawPvtwTables.Count} region record(s).");
                             break;
 
-                        case "EQUIL": 
-                            deck.RawEquilTables.AddRange(KeywordExtractor.ExtractMultiTableGroup(tokens, ref i, splitOnSingleSlash: true));
-                            Console.WriteLine($"      [Data] EQUIL: Successfully loaded {deck.RawEquilTables.Count} hydrostatic initialization record region(s).");
+                        case "SWOF":
+                            deck.RawSwofTables.AddRange(ParseRowStructuredRegions(tokens, ref i, columnsPerRow: 4));
+                            Console.WriteLine($"      [Data] SWOF: Loaded {deck.RawSwofTables.Count} region table(s).");
                             break;
+
+                        case "SGOF":
+                            deck.RawSgofTables.AddRange(ParseRowStructuredRegions(tokens, ref i, columnsPerRow: 4));
+                            Console.WriteLine($"      [Data] SGOF: Loaded {deck.RawSgofTables.Count} region table(s).");
+                            break;
+
+                        case "EQUIL":
+                            deck.RawEquilTables.AddRange(KeywordExtractor.ExtractMultiTableGroup(tokens, ref i, splitOnSingleSlash: true));
+                            Console.WriteLine($"      [Data] EQUIL: Loaded {deck.RawEquilTables.Count} region record(s).");
+                            break;
+
+
 
                         case "EQUINUM":
                             var equilData = KeywordExtractor.ExtractIntArray(tokens, ref i);
-                            deck.EquinumArray = [..equilData.Select(e => e - 1)]; 
+                            deck.EquinumArray = [.. equilData.Select(e => e - 1)];
                             Console.WriteLine($"      [Data] EQUINUM: Loaded and converted {deck.EquinumArray.Count} entries to 0-based indexing.");
                             break;
 
@@ -219,17 +249,6 @@ namespace EclipseDeckReader
                                 deck.RockCompressibility = rockProps[1];
                                 Console.WriteLine($"      [Data] ROCK: Mechanical Properties -> Ref Pressure: {deck.RockReferencePressure:F2} | Compressibility: {deck.RockCompressibility:E4}");
                             }
-                            break;
-
-                        case "PVTG":
-                            deck.RawPvtgTables.AddRange(KeywordExtractor.ExtractMultiTableGroup(tokens, ref i, splitOnSingleSlash: false));
-                            break;
-
-                        case "SWOF":
-                            deck.RawSwofTables.AddRange(KeywordExtractor.ExtractMultiTableGroup(tokens, ref i, splitOnSingleSlash: true));
-                            break;
-                        case "SGOF":
-                            deck.RawSgofTables.AddRange(KeywordExtractor.ExtractMultiTableGroup(tokens, ref i, splitOnSingleSlash: true));
                             break;
 
                         case "FAULTS":
@@ -255,6 +274,150 @@ namespace EclipseDeckReader
                     i++;
                 }
             }
+        }
+        private static List<List<List<double>>> ParseNestedPvtRegions(List<Token> tokens, ref int index)
+        {
+            var regions = new List<List<List<double>>>();
+            var currentRegionSubTables = new List<List<double>>();
+            var currentSubTable = new List<double>();
+
+            while (index < tokens.Count)
+            {
+                ClearLeadingLayoutSpacers(tokens, ref index);
+                if (index >= tokens.Count) break;
+
+                // Stop when the next ECLIPSE keyword begins
+                if (tokens[index].Type == TokenType.Keyword)
+                {
+                    break;
+                }
+
+                // Handle slash '/' terminators
+                if (tokens[index].Type == TokenType.Slash || tokens[index].Content.ToString() == "/")
+                {
+                    index++; // Consume the slash
+
+                    if (currentSubTable.Count > 0)
+                    {
+                        // Inner slash: closes the current Rs (or P) undersaturated branch
+                        currentRegionSubTables.Add(currentSubTable);
+                        currentSubTable = new List<double>();
+                    }
+                    else
+                    {
+                        // Empty slash right after an inner slash ('/ /'): closes the entire PVT region
+                        if (currentRegionSubTables.Count > 0)
+                        {
+                            regions.Add(currentRegionSubTables);
+                            currentRegionSubTables = new List<List<double>>();
+                        }
+                    }
+                    continue;
+                }
+
+                string rawVal = tokens[index].Content.ToString();
+                index++;
+
+                // Handle defaulted tokens like "1*" or "3*" -> 0.0
+                if (rawVal.EndsWith('*') && int.TryParse(rawVal.AsSpan(0, rawVal.Length - 1), out int defaultCount))
+                {
+                    for (int d = 0; d < defaultCount; d++)
+                        currentSubTable.Add(0.0);
+                    continue;
+                }
+
+                // Unpack repeat notation if present (e.g., 3*1.25)
+                int starIdx = rawVal.IndexOf('*');
+                if (starIdx > 0 &&
+                    int.TryParse(rawVal.AsSpan(0, starIdx), out int repeatCount) &&
+                    double.TryParse(rawVal.AsSpan(starIdx + 1), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double repeatedVal))
+                {
+                    for (int r = 0; r < repeatCount; r++)
+                        currentSubTable.Add(repeatedVal);
+                }
+                else if (double.TryParse(rawVal, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double val))
+                {
+                    currentSubTable.Add(val);
+                }
+            }
+
+            // Flush any trailing unclosed sub-table or region at EOF
+            if (currentSubTable.Count > 0)
+                currentRegionSubTables.Add(currentSubTable);
+            if (currentRegionSubTables.Count > 0)
+                regions.Add(currentRegionSubTables);
+
+            return regions;
+        }
+        private static List<List<List<double>>> ParseRowStructuredRegions(List<Token> tokens, ref int index, int columnsPerRow)
+        {
+            var regions = new List<List<List<double>>>();
+            var flatRegionValues = new List<double>();
+
+            while (index < tokens.Count)
+            {
+                ClearLeadingLayoutSpacers(tokens, ref index);
+                if (index >= tokens.Count) break;
+
+                if (tokens[index].Type == TokenType.Keyword)
+                {
+                    break;
+                }
+
+                if (tokens[index].Type == TokenType.Slash || tokens[index].Content.ToString() == "/")
+                {
+                    index++; // Consume slash terminating this region
+                    if (flatRegionValues.Count > 0)
+                    {
+                        regions.Add(ChunkIntoRows(flatRegionValues, columnsPerRow));
+                        flatRegionValues = new List<double>();
+                    }
+                    continue;
+                }
+
+                string rawVal = tokens[index].Content.ToString();
+                index++;
+
+                // Handle defaulted tokens like "1*" or "3*" -> 0.0
+                if (rawVal.EndsWith('*') && int.TryParse(rawVal.AsSpan(0, rawVal.Length - 1), out int defaultCount))
+                {
+                    for (int d = 0; d < defaultCount; d++)
+                        flatRegionValues.Add(0.0);
+                    continue;
+                }
+
+                // Handle repeat notation like "3*1.25"
+                int starIdx = rawVal.IndexOf('*');
+                if (starIdx > 0 &&
+                    int.TryParse(rawVal.AsSpan(0, starIdx), out int repeatCount) &&
+                    double.TryParse(rawVal.AsSpan(starIdx + 1), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double repeatedVal))
+                {
+                    for (int r = 0; r < repeatCount; r++)
+                        flatRegionValues.Add(repeatedVal);
+                }
+                else if (double.TryParse(rawVal, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double val))
+                {
+                    flatRegionValues.Add(val);
+                }
+            }
+
+            if (flatRegionValues.Count > 0)
+            {
+                regions.Add(ChunkIntoRows(flatRegionValues, columnsPerRow));
+            }
+
+            return regions;
+        }
+
+        private static List<List<double>> ChunkIntoRows(List<double> flatValues, int columnsPerRow)
+        {
+            var rows = new List<List<double>>();
+            for (int start = 0; start < flatValues.Count; start += columnsPerRow)
+            {
+                int count = Math.Min(columnsPerRow, flatValues.Count - start);
+                rows.Add(flatValues.GetRange(start, count));
+            }
+            return rows;
         }
 
         private static void InitializeArrays(EclipseDataDeck deck)

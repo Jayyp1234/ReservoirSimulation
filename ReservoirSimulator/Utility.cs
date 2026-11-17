@@ -1,11 +1,73 @@
 ﻿using SepalSolver;
 using System.Runtime.CompilerServices;
 using static ReservoirSimulator.Math;
+using UnitSystem.Parsing;
+using UnitSystem.Registry;
+using UnitSystem.Services;
 
 namespace ReservoirSimulator
 {
     internal class Utility
     {
+
+        static double alpha = 0.00112712;
+
+        // Key: Quantity Name
+        // Value: string[4] -> [0] = FIELD, [1] = METRIC, [2] = PVT-M, [3] = LAB
+        public static readonly Dictionary<string, string[]> UnitsByQuantity = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Length"] = ["ft", "m", "m", "cm"],
+            ["Depth"] = ["ft", "m", "m", "cm"],
+            ["Grid Dimensions (DX, DY, DZ)"] = ["ft", "m", "m", "cm"],
+            ["Wellbore Diameter"] = ["ft", "m", "m", "cm"],
+            ["Pressure"] = ["psi", "bar", "atm", "atm"],
+            ["Capillary Pressure (Pc)"] = ["psi", "bar", "atm", "atm"],
+            ["Compressibility"] = ["1/psi", "1/bar", "1/atm", "1/atm"],
+            ["Permeability"] = ["mD", "mD", "mD", "mD"],
+            ["Viscosity"] = ["cP", "cP", "cP", "cP"],
+            ["Porosity"] = ["fraction", "fraction", "fraction", "fraction"],
+            ["Transmissibility"] = ["cP*rb/(day*psi)", "cP*rm^3/(day*bar)", "cP*rm^3/(day*atm)", "cP*rcc/(hr*atm)"],
+            ["Well Productivity Index (PI)"] = ["STB/(day*psi)", "sm^3/(day*bar)", "sm^3/(day*atm)", "scc/(hr*atm)"],
+            ["Liquid Surface Rate (Oil / Water)"] = ["STB/day", "sm^3/day", "sm^3/day", "scc/hr"],
+            ["Gas Surface Rate"] = ["Mscf/day", "sm^3/day", "sm^3/day", "scc/hr"],
+            ["Reservoir Volume Rate"] = ["rb/day", "rm^3/day", "rm^3/day", "rcc/hr"],
+            ["Cumulative Liquid Volume"] = ["STB", "sm^3", "sm^3", "scc"],
+            ["Cumulative Gas Volume"] = ["Mscf", "sm^3", "sm^3", "scc"],
+            ["Oil Formation Volume Factor (Bo)"] = ["rb/STB", "rm^3/sm^3", "rm^3/sm^3", "rcc/scc"],
+            ["Water Formation Volume Factor (Bw)"] = ["rb/STB", "rm^3/sm^3", "rm^3/sm^3", "rcc/scc"],
+            ["Gas Formation Volume Factor (Bg)"] = ["rb/Mscf", "rm^3/sm^3", "rm^3/sm^3", "rcc/scc"],
+            ["Solution Gas-Oil Ratio (Rs)"] = ["Mscf/STB", "sm^3/sm^3", "sm^3/sm^3", "scc/scc"],
+            ["Vaporized Oil-Gas Ratio (Rv)"] = ["STB/Mscf", "sm^3/sm^3", "sm^3/sm^3", "scc/scc"],
+            ["Density"] = ["lb/ft^3", "kg/m^3", "kg/m^3", "g/cm^3"],
+            ["Temperature"] = ["°F", "°C", "°C", "°C"],
+            ["Time"] = ["days", "days", "days", "hours"],
+            ["Mass"] = ["lbm", "kg", "kg", "g"]
+        };
+
+        public static double Convert(double value, string quantityName, Units fromUnits, Units toUnits)
+        {
+            if (!UnitsByQuantity.TryGetValue(quantityName, out var unitArray))
+                throw new ArgumentException($"Unknown quantity name: {quantityName}");
+            int fromIndex = (int)fromUnits;
+            int toIndex = (int)toUnits;
+            string fromUnit = unitArray[fromIndex];
+            string toUnit = unitArray[toIndex];
+            return UnitConverter.Convert(value, fromUnit, toUnit);
+        }
+
+
+        public static IEnumerable<double> Convert(IEnumerable<double> values, string quantityName, Units fromUnits, Units toUnits)
+        {
+            if (!UnitsByQuantity.TryGetValue(quantityName, out var unitArray))
+                throw new ArgumentException($"Unknown quantity name: {quantityName}");
+            int fromIndex = (int)fromUnits;
+            int toIndex = (int)toUnits;
+            string fromUnit = unitArray[fromIndex];
+            string toUnit = unitArray[toIndex];
+            return values.Select(value => UnitConverter.Convert(value, fromUnit, toUnit));
+        }
+
+
         /// <summary>
         /// Calculates the volume of a single tetrahedron using SIMD Vector3d registers.
         /// </summary>
@@ -40,32 +102,29 @@ namespace ReservoirSimulator
             }
 
             // Guard against degenerate/pinched-out dead cells
-            if (double.IsNaN(totalVolume) || totalVolume < 1e-6)
-            {
-                return 0.0;
-            }
+            if (double.IsNaN(totalVolume) || totalVolume < 1e-6)  return 0.0;
 
             return totalVolume;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static double ComputePerpendicularDistance(Vector3d cellCenter, Vector3d p0, Vector3d p1, Vector3d p2)
+
+        public static double ComputePerpendicularDistance(Vector3d cellCenter, Vector3d p0, Vector3d p1, Vector3d p2, Vector3d p3)
         {
-            // Step 1: Calculate two edge vectors from the face corners
-            Vector3d v1 = p1 - p0;
-            Vector3d v2 = p2 - p0;
+            // Step 1: Calculate two diagonal vectors from the face corners
+            Vector3d d1 = p2 - p0,  d2 = p3 - p1;
 
             // Step 2 & 3: Compute the face normal and normalize it to a unit vector
-            Vector3d normalLarge = Vector3d.Cross(v1, v2);
+            Vector3d normalLarge = Vector3d.Cross(d1, d2);
             double magnitude = normalLarge.Magnitude();
 
-            // Guard against degenerate/zero-area faces
+            // Guard against completely collapsed/zero-area faces
             if (magnitude < 1e-12) return 0.0;
-
             Vector3d unitNormal = (1.0 / magnitude) * normalLarge;
 
-            // Step 4: Create a vector pointing from a face corner to the block center
-            Vector3d vCenter = cellCenter - p0;
+            // Step 4: Anchor at the face centroid rather than a single corner
+            Vector3d faceCenter = 0.25 * (p0 + p1 + p2 + p3);
+            Vector3d vCenter = cellCenter - faceCenter;
 
             // Step 5: Dot product projects the center vector onto the perpendicular normal track
             double distance = Vector3d.Dot(vCenter, unitNormal);
@@ -117,15 +176,6 @@ namespace ReservoirSimulator
                     }
                 }
             }
-        }
-
-        static double Harmmean(double x1, double x2)
-        {
-            // Guard against zero or negative permeability values
-            if (x1 <= 0 || x2 <= 0) return 0.0;
-            if (double.IsInfinity(x1)) return x2;
-            if(double.IsInfinity(x2)) return x1;
-            return 2.0 * x1 * x2 / (x1 + x2);
         }
 
         static bool AreFacesCoplanar(Face f1, Face f2)
@@ -233,16 +283,37 @@ namespace ReservoirSimulator
 
             return area2D / cosTheta;
         }
+
         static void RegisterGridConnection(Face f1, Face f2, double area)
         {
-            double x1 = f1.Permeability / f1.PerpendicularDistance2Center,
-                   x2 = f2.Permeability / f2.PerpendicularDistance2Center;
-            double T = area * Harmmean(x1, x2); 
-            f1.GridIndices.Add(f2.GlobalGridIndex); f1.Transmissibility.Add(T);
-            f2.GridIndices.Add(f1.GlobalGridIndex); f2.Transmissibility.Add(T);
+            double x1 = f1.Permeability / f1.PerpendicularDistance2Center;
+            double x2 = f2.Permeability / f2.PerpendicularDistance2Center;
+
+            // Guard against zero-permeability shale barriers or zero distance
+            double denom = x1 + x2;
+            double T = (denom > 0.0) ? (alpha * area * (x1 * x2) / denom) : 0.0;
+
+            AddConnection(f1, f2.GlobalGridIndex, T);
+            AddConnection(f2, f1.GlobalGridIndex, T);
         }
 
-        
+        static void AddConnection(Face f, int neighborIdx, double trans)
+        {
+            if (trans <= 0.0) return;
+
+            int existing = f.GridIndices.IndexOf(neighborIdx);
+            if (existing >= 0)
+            {
+                f.Transmissibility[existing] += trans;
+            }
+            else
+            {
+                f.GridIndices.Add(neighborIdx);
+                f.Transmissibility.Add(trans);
+            }
+        }
+
+
 
         static Vector2d[] ProjectTo2D(Vector3d[] vertices, int dropAxis)
         {
@@ -426,23 +497,23 @@ namespace ReservoirSimulator
             return yLeft + fraction * (yRight - yLeft);
         }
 
-        public static void SetAcitveGrids<T>(Grid<T>[] Grids, List<int> Actnum, Func<ADiff<T>, ADiff<T>> Er) where T : struct, IVectorND<T>
+        public static int SetAcitveGrids<T>(Grid<T>[] Grids, List<int> Actnum, Func<ADiff<T>, ADiff<T>> Er) where T : struct, IVectorND<T>
         {
-            int activeindex = 0;
+            int numActiveGrids = 0;
             for (int m = 0; m < Grids.Length; m++)
             {
                 var grid = Grids[m];
                 grid.GlobalIndex = m;
-                if(Actnum[m] > 0)
+                if (Actnum[m] > 0)
                 {
                     grid.Er = Er;
                     grid.MakeFaces();
-                    grid.ActiveIndex = activeindex;
+                    grid.ActiveIndex = numActiveGrids++;
                     foreach (var face in grid.Faces)
                         face.GlobalGridIndex = m;
-                    activeindex++;
                 }
             }
+            return numActiveGrids;
         }
 
         public static void SetPVDO<T>(Grid<T>[] Grids, List<int> Pvtnum,  PVDOAnalysis[] pvdo, double γo0) where T : struct, IVectorND<T>
@@ -634,6 +705,35 @@ namespace ReservoirSimulator
                 Grids[m].Corners[7] = new Vector3d(xlo, yhi, zlo);     // Point 7
             }
             return Grids;
+        }
+
+        public static (double slope, double intercept, double rSquared) LinearRegression(List<double> x, List<double> y)
+        {
+            int n = x.Count;
+            if (n < 2) return (1.0, 0.0, 0.0);
+
+            double sumX = x.Sum(); double sumY = y.Sum();
+            double sumXY = x.Zip(y, (xi, yi) => xi * yi).Sum();
+            double sumXSq = x.Sum(xi => Sqr(xi));
+
+            double denominator = (n * sumXSq) - (sumX * sumX);
+            if (Abs(denominator) < 1e-11) return (1.0, 0.0, 0.0);
+
+            double m = ((n * sumXY) - (sumX * sumY)) / denominator;
+            double b = (sumY - (m * sumX)) / n;
+
+            double yMean = sumY / n;
+            double ssTot = y.Sum(yi => Sqr(yi - yMean));
+            double ssRes = y.Zip(x, (yi, xi) => Sqr(yi - (m * xi + b))).Sum();
+            double rSq = ssTot > 0 ? 1.0 - (ssRes / ssTot) : 1.0;
+
+            return (m, b, rSq);
+        }
+
+        internal static void AddIfPresent(List<double> list, double? value)
+        {
+            if (value.HasValue)
+                list.Add(value.GetValueOrDefault());
         }
     }
 }

@@ -10,17 +10,11 @@ namespace ReservoirSimulator
         public Phase PreferedPhase { get; set; }
         public List<int> PerfNatIndex { get; set; } = [];
         public List<double> Perforation_WI { get; set; } = [];
-        public double MinPressure { get; }
-        public double MaxPressure { get; }
-
-        public double Target_Qo { get; set; }
         public ADiff<T> Qo { get; set; }
-        public double Target_Qw { get; set; }
         public ADiff<T> Qw { get; set; }
-        public double Target_Ql { get; set; }
         public ADiff<T> Ql { get { return Qo + Qw; } }
-        public double Target_Qg { get; set; }
         public ADiff<T> Qg { get; set; }
+        public ADiff<T> Pwf { get; set; }
         public double Fw { get{  return Qw.Value*100 / (Qo + Qw).Value; } }
         public double ZControl { get; set; }
         public int I { get; }
@@ -62,7 +56,7 @@ namespace ReservoirSimulator
                         "WRAT" => ConstraintType.WRATE,
                         "GRAT" => ConstraintType.GRATE,
                         "LRAT" => ConstraintType.LRATE,
-                        "BHP" => WellType == WellType.INJECTOR ? ConstraintType.MAXP : ConstraintType.MINP,
+                        "BHP" => WellType == WellType.INJECTOR ? ConstraintType.MAX_BHP : ConstraintType.MIN_BHP,
                         _ => ConstraintType.ORATE // '_' acts as the default case
                     };
 
@@ -74,10 +68,11 @@ namespace ReservoirSimulator
             get { return currentcompletionRecord; }
             set
             {
-                if(currentcompletionRecord != value)
+                CompletionChanged = false;
+                if (currentcompletionRecord != value)
                 {
                     currentcompletionRecord = value;
-
+                    CompletionChanged = true;
                     var comp = currentcompletionRecord;
                     PerfNatIndex = [];
                     double radius = comp.WellBoreDiameter / 2, skin = comp.EffectiveSkin;
@@ -129,11 +124,27 @@ namespace ReservoirSimulator
         }
         WellCompletionRecord currentcompletionRecord = null;
         WellControlRecord currentControl = null;
+        public bool CompletionChanged { get; private set; } = false;
+        public bool ActiveStatusChanged { get; private set; } = false;
+        public bool isActive { get; private set; } = false;
         public int ActiveIndex { get; set; }
+        public double Zref { get; set; }
         public double HighestZref { get; set; }
         public double LowestZref { get; set; }
-        public double Pwf_n, Qflow_n;
+        public double Pwf_n, Qo_n, Qw_n, Qg_n, Ql_n;
+
+        public List<double> PWF = [], QO = [], QW = [], QG = [];
+
+        public void SaveResult(double? pwf = null, double? qw = null, 
+            double? qg = null, double? qo = null, double? sg = null)
+        {
+            Utility.AddIfPresent(PWF, pwf);
+            Utility.AddIfPresent(QG, qg);
+            Utility.AddIfPresent(QW, qw);
+            Utility.AddIfPresent(QO, qo);
+        }
         WellData WellData;
+        Phase PreferredPhase;
         double alpha_well = 1.127e-3 * 2 * pi;
 
 
@@ -145,6 +156,13 @@ namespace ReservoirSimulator
             I = WellData.Specification.HeadI;
             J = WellData.Specification.HeadJ;
             ref_Index = WellType == WellType.PRODUCER ? int.MaxValue : 0;
+            PreferedPhase = WellData.Specification.PreferredPhase.ToUpperInvariant() switch
+            {
+                "OIL" => Phase.OIL,
+                "WATER" => Phase.WATER,
+                "GAS" => Phase.GAS,
+                _ => Phase.OIL
+            };
         }
 
         internal List<DateTime> GetEventTimes()
@@ -164,6 +182,9 @@ namespace ReservoirSimulator
                     break;
             }
             CurrentControl = WellData.ControlHistory[m - 1];
+            ActiveStatusChanged = !isActive && CurrentControl.WellStatus == "OPEN" ||
+                isActive && CurrentControl.WellStatus == "SHUT";
+            isActive = CurrentControl.WellStatus == "OPEN";
         }
 
         internal void UpdateCompletion(DateTime time)
@@ -179,91 +200,54 @@ namespace ReservoirSimulator
             CurrentCompletionRecord = WellData.CompletionHistory[m - 1];
         }
 
-        internal ADiff<T> Constraint(ADiff<T> pressure,  ADiff<T> rate)
+        internal bool IsWaterTarget =>
+            ConstraintType == ConstraintType.WRATE ||
+            (ConstraintType == ConstraintType.RATE && PreferedPhase == Phase.WATER);
+
+        internal bool IsOilTarget =>
+            ConstraintType is ConstraintType.ORATE or ConstraintType.MIN_BHP ||
+            (ConstraintType == ConstraintType.RATE && PreferedPhase == Phase.OIL);
+
+        internal bool IsGasTarget =>
+            ConstraintType == ConstraintType.GRATE ||
+            (ConstraintType == ConstraintType.RATE && PreferedPhase == Phase.GAS);
+
+        internal ADiff<T> Constraint(ADiff<T> pressure, ADiff<T> rate)
         {
-            
-            Target_Qo = 0; Target_Qw = 0; Target_Qg = 0; Target_Ql = 0;
-            ADiff<T> cons = 0;
+            ADiff<T> cons = default;
+
             switch (ConstraintType)
             {
-                case ConstraintType.MINP:
-                    {
-                        // Producers draw down to a minimum BHP; 
-                        double targetBhp = currentControl.MinBhpLimit;
-                        cons = pressure - targetBhp;
-                        break;
-                    }
+                case ConstraintType.MIN_BHP:
+                    cons = pressure - CurrentControl.MinBhpLimit;
+                    break;
 
-                case ConstraintType.MAXP:
-                    {
-                        // Injectors pump up to a maximum BHP
-                        double targetBhp = currentControl.MaxBhpLimit;
-                        cons = pressure - targetBhp;
-                        break;
-                    }
+                case ConstraintType.MAX_BHP:
+                    cons = pressure - CurrentControl.MaxBhpLimit;
+                    break;
 
                 case ConstraintType.ORATE:
-                    {
-                        Target_Qo = currentControl.OilRateTarget;
-                        // Target is phase rate, so enforce against accumulated oil rate:
-                        cons = Qo - Target_Qo;
-                        break;
-                    }
+                    cons = rate - CurrentControl.OilRateTarget;
+                    break;
 
                 case ConstraintType.WRATE:
-                    {
-                        Target_Qw = currentControl.WaterRateTarget;
-                        cons = Qw - Target_Qw;
-                        break;
-                    }
+                    cons = rate - CurrentControl.WaterRateTarget;
+                    break;
 
                 case ConstraintType.GRATE:
-                    {
-                        Target_Qg = currentControl.GasRateTarget;
-                        cons = Qg - Target_Qg;
-                        break;
-                    }
+                    cons = rate - CurrentControl.GasRateTarget;
+                    break;
 
                 case ConstraintType.LRATE:
-                    {
-                        Target_Ql = currentControl.LiquidRateTarget;
-                        cons = (Qo + Qw) - Target_Ql;
-                        break;
-                    }
+                    cons = rate - CurrentControl.LiquidRateTarget;
+                    break;
 
                 case ConstraintType.RATE:
-                    {
-                        // General rate target based on specification
-                        double target = currentControl.TargetRate;
-                        switch (WellData.Specification.PreferredPhase.ToUpperInvariant())
-                        {
-                            case "OIL":
-                                PreferedPhase = Phase.OIL;
-                                Target_Qo = target;
-                                cons = Qo - Target_Qo;
-                                break;
-
-                            case "WATER":
-                                PreferedPhase = Phase.WATER;
-                                Target_Qw = target;
-                                cons = Qw - Target_Qw;
-                                break;
-
-                            case "GAS":
-                                PreferedPhase = Phase.GAS;
-                                Target_Qg = target;
-                                cons = Qg - Target_Qg;
-                                break;
-
-                            default: // TOTAL FLUID
-                                cons = rate - target;
-                                break;
-                        }
-                        break;
-                    }
+                    cons = rate - CurrentControl.TargetRate;
+                    break;
 
                 default:
-                    throw new NotSupportedException($"Unsupported well control mode: {currentControl.ControlMode}");
+                    throw new NotSupportedException($"Unsupported well control mode: {CurrentControl.ControlMode}");
             }
 
             return cons;
