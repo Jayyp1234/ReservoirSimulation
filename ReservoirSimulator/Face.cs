@@ -1,4 +1,5 @@
 ﻿using SepalSolver;
+using static ReservoirSimulator.Math;
 
 namespace ReservoirSimulator
 {
@@ -14,12 +15,16 @@ namespace ReservoirSimulator
         public Vector3d Center { get; set; }
 
         public double PerpendicularDistance2Center { get; set; }
-        public AABB BoundingBox  { get; set; }
+        public double Area { get; private set; }
 
-        public void MakeBoundBox()
+        public void ComputeArea()
         {
-            BoundingBox = new(Corners.Min(c => c.X), Corners.Min(c => c.Y), Corners.Min(c => c.Z),
-                              Corners.Max(c => c.X), Corners.Max(c => c.Y), Corners.Max(c => c.Z));
+            // Exact area of a general 4-corner quad via half the cross product of its diagonals
+            Vector3d diagA = Corners[2] - Corners[0];
+            Vector3d diagB = Corners[3] - Corners[1];
+            Vector3d cross = Vector3d.Cross(diagA, diagB);
+
+            Area = 0.5 * Sqrt(Vector3d.Dot(cross, cross));
         }
     }
 }

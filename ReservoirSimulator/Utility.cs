@@ -10,7 +10,7 @@ namespace ReservoirSimulator
     internal class Utility
     {
 
-        static double alpha = 0.00112712;
+        const double alpha = 1.12712e-3, beta = 5.615;
 
         // Key: Quantity Name
         // Value: string[4] -> [0] = FIELD, [1] = METRIC, [2] = PVT-M, [3] = LAB
@@ -44,7 +44,7 @@ namespace ReservoirSimulator
             ["Mass"] = ["lbm", "kg", "kg", "g"]
         };
 
-        public static double Convert(double value, string quantityName, Units fromUnits, Units toUnits)
+        internal static double Convert(double value, string quantityName, Units fromUnits, Units toUnits)
         {
             if (!UnitsByQuantity.TryGetValue(quantityName, out var unitArray))
                 throw new ArgumentException($"Unknown quantity name: {quantityName}");
@@ -55,8 +55,7 @@ namespace ReservoirSimulator
             return UnitConverter.Convert(value, fromUnit, toUnit);
         }
 
-
-        public static IEnumerable<double> Convert(IEnumerable<double> values, string quantityName, Units fromUnits, Units toUnits)
+        internal static IEnumerable<double> Convert(IEnumerable<double> values, string quantityName, Units fromUnits, Units toUnits)
         {
             if (!UnitsByQuantity.TryGetValue(quantityName, out var unitArray))
                 throw new ArgumentException($"Unknown quantity name: {quantityName}");
@@ -67,253 +66,34 @@ namespace ReservoirSimulator
             return values.Select(value => UnitConverter.Convert(value, fromUnit, toUnit));
         }
 
-
-        /// <summary>
-        /// Calculates the volume of a single tetrahedron using SIMD Vector3d registers.
-        /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static double CalculateTetrahedronVolume(Vector3d v0, Vector3d v1, Vector3d v2, Vector3d v3)
+        internal static (double slope, double intercept, double rSquared) LinearRegression(List<double> x, List<double> y)
         {
-            // Vectorize edge profiles
-            Vector3d edge1 = v1 - v0;
-            Vector3d edge2 = v2 - v0;
-            Vector3d edge3 = v3 - v0;
+            int n = x.Count;
+            if (n < 2) return (1.0, 0.0, 0.0);
 
-            // Triple scalar product: edge1 . (edge2 x edge3)
-            Vector3d crossProduct = Vector3d.Cross(edge2, edge3);
-            double tripleProduct = Vector3d.Dot(edge1, crossProduct);
+            double sumX = x.Sum(); double sumY = y.Sum();
+            double sumXY = x.Zip(y, (xi, yi) => xi * yi).Sum();
+            double sumXSq = x.Sum(xi => Sqr(xi));
 
-            // Volume is exactly 1/6th of the parallelpiped volume
-            return Abs(tripleProduct) / 6.0;
+            double denominator = (n * sumXSq) - (sumX * sumX);
+            if (Abs(denominator) < 1e-11) return (1.0, 0.0, 0.0);
+
+            double m = ((n * sumXY) - (sumX * sumY)) / denominator;
+            double b = (sumY - (m * sumX)) / n;
+
+            double yMean = sumY / n;
+            double ssTot = y.Sum(yi => Sqr(yi - yMean));
+            double ssRes = y.Zip(x, (yi, xi) => Sqr(yi - (m * xi + b))).Sum();
+            double rSq = ssTot > 0 ? 1.0 - (ssRes / ssTot) : 1.0;
+
+            return (m, b, rSq);
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static double ComputeHexahedronVolume<T>(Grid<T> grid) where T : struct, IVectorND<T>
+        internal static void AddIfPresent(List<double> list, double? value)
         {
-            // Sanity Check: Ensure we have exactly 8 corners
-            if (grid.Corners.Length != 8) throw new ArgumentException("Hexahedron must have exactly 8 corners.");
-
-            // Sum the volumes of the 12 constituent tetrahedrons
-            double totalVolume = 0;
-            foreach(var face in grid.Faces)
-            {
-                totalVolume += CalculateTetrahedronVolume(grid.Center, face.Corners[0], face.Corners[1], face.Corners[2]);
-                totalVolume += CalculateTetrahedronVolume(grid.Center, face.Corners[0], face.Corners[2], face.Corners[3]);
-            }
-
-            // Guard against degenerate/pinched-out dead cells
-            if (double.IsNaN(totalVolume) || totalVolume < 1e-6)  return 0.0;
-
-            return totalVolume;
+            if (value.HasValue)
+                list.Add(value.GetValueOrDefault());
         }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-
-        public static double ComputePerpendicularDistance(Vector3d cellCenter, Vector3d p0, Vector3d p1, Vector3d p2, Vector3d p3)
-        {
-            // Step 1: Calculate two diagonal vectors from the face corners
-            Vector3d d1 = p2 - p0,  d2 = p3 - p1;
-
-            // Step 2 & 3: Compute the face normal and normalize it to a unit vector
-            Vector3d normalLarge = Vector3d.Cross(d1, d2);
-            double magnitude = normalLarge.Magnitude();
-
-            // Guard against completely collapsed/zero-area faces
-            if (magnitude < 1e-12) return 0.0;
-            Vector3d unitNormal = (1.0 / magnitude) * normalLarge;
-
-            // Step 4: Anchor at the face centroid rather than a single corner
-            Vector3d faceCenter = 0.25 * (p0 + p1 + p2 + p3);
-            Vector3d vCenter = cellCenter - faceCenter;
-
-            // Step 5: Dot product projects the center vector onto the perpendicular normal track
-            double distance = Vector3d.Dot(vCenter, unitNormal);
-
-            // Return absolute distance (direction relative to the normal does not matter for transmissibility)
-            return Abs(distance);
-        }
-
-        public static void ComputeFaceTransmissibility<T>(Grid<T>[] Grids) where T : struct, IVectorND<T>
-        {
-            // 1. Gather all faces from all active grid cells into a single flat list
-            List<Face> Faces = Grids.Where(grid=>grid.isActive).SelectMany(grid => grid.Faces).ToList();
-
-            // 2. Instantiate and build the AABB Tree (Runs in O(N log N))
-            AABBTree spatialTree = new();
-            spatialTree.Build(Faces);
-
-            // 3. Query the tree for each face to resolve connectivity
-            foreach (var currentFace in Faces)
-            {
-                List<Face> overlappingCandidates = [];
-
-                // Pass the root of the built tree and the current target bounding box
-                AABBTree.FindOverlappingFaces(spatialTree.Root, currentFace.BoundingBox, overlappingCandidates);
-
-                // 4. Narrow Phase: Filter candidates and calculate true physical connections
-                foreach (var candidate in overlappingCandidates)
-                {
-                    // Rule A: Skip if the face belongs to the exact same cell
-                    if (candidate.GlobalGridIndex == currentFace.GlobalGridIndex)
-                        continue;
-
-                    // Rule B: Enforce index ordering constraint (current < candidate)
-                    // This guarantees each cell-face pair interaction is evaluated exactly once
-                    if (currentFace.GlobalGridIndex >= candidate.GlobalGridIndex)
-                        continue;
-
-                    // Rule C: Run your computational geometry suite checks
-                    if (AreFacesCoplanar(currentFace, candidate))
-                    {
-                        // Project both sets of 3D vertices onto a 2D plane and calculate the shared area
-                        double sharedArea = Calculate2DIntersectionArea(currentFace, candidate);
-
-                        if (sharedArea > 1e-6) // Ensure it is a valid, physical contact area
-                        {
-                            // Register the connectivity in your global matrix/transmissibility graph
-                            RegisterGridConnection(currentFace, candidate, sharedArea);
-                        }
-                    }
-                }
-            }
-        }
-
-        static bool AreFacesCoplanar(Face f1, Face f2)
-        {
-            // Geometric tolerance for double precision alignment (adjustable based on grid skew/warp)
-            const double Tolerance = 1e-5;
-
-            // --- Step 1: Calculate Normal Vector for Face 1 via Diagonal Cross Product ---
-            // Diagonals for a 4-corner quad are strictly (2 - 0) and (3 - 1)
-            Vector3d diag1A = f1.Corners[2] - f1.Corners[0];
-            Vector3d diag1B = f1.Corners[3] - f1.Corners[1];
-
-            // Cross Product: diag1A x diag1B
-            Vector3d normal1 = new(
-                diag1A.Y * diag1B.Z - diag1A.Z * diag1B.Y,
-                diag1A.Z * diag1B.X - diag1A.X * diag1B.Z,
-                diag1A.X * diag1B.Y - diag1A.Y * diag1B.X
-            );
-
-            // Check for degenerate/zero-area face
-            double lenSq1 = normal1.X * normal1.X + normal1.Y * normal1.Y + normal1.Z * normal1.Z;
-            if (lenSq1 < 1e-12) return false;
-
-            double invLen1 = 1.0 / Sqrt(lenSq1);
-            Vector3d unitNormal1 = new(normal1.X * invLen1, normal1.Y * invLen1, normal1.Z * invLen1);
-
-            // --- Step 2: Calculate Normal Vector for Face 2 ---
-            Vector3d diag2A = f2.Corners[2] - f2.Corners[0];
-            Vector3d diag2B = f2.Corners[3] - f2.Corners[1];
-
-            // Cross Product: diag2A x diag2B
-            Vector3d normal2 = new(
-                diag2A.Y * diag2B.Z - diag2A.Z * diag2B.Y,
-                diag2A.Z * diag2B.X - diag2A.X * diag2B.Z,
-                diag2A.X * diag2B.Y - diag2A.Y * diag2B.X
-            );
-
-            double lenSq2 = normal2.X * normal2.X + normal2.Y * normal2.Y + normal2.Z * normal2.Z;
-            if (lenSq2 < 1e-12) return false;
-
-            double invLen2 = 1.0 / Sqrt(lenSq2);
-            Vector3d unitNormal2 = new(normal2.X * invLen2, normal2.Y * invLen2, normal2.Z * invLen2);
-
-            // --- Step 3: Test for Parallel Normal Vectors ---
-            // Dot product of the two unit normals
-            double normalDot = Abs(unitNormal1.X * unitNormal2.X +
-                                   unitNormal1.Y * unitNormal2.Y +
-                                   unitNormal1.Z * unitNormal2.Z);
-
-            if (normalDot < (1.0 - Tolerance))
-            {
-                return false; // Normals are not parallel; faces are not facing the same direction
-            }
-
-            // --- Step 4: Test for Same Plane Alignment (Distance Check) ---
-            // Displacement vector from the first corner of Face 1 to the first corner of Face 2
-            Vector3d displacement = f2.Corners[0] - f1.Corners[0];
-
-            // Dot product between displacement and the face normal
-            double planeDistanceDot = Abs(displacement.X * unitNormal1.X +
-                                          displacement.Y * unitNormal1.Y +
-                                          displacement.Z * unitNormal1.Z);
-
-            // If the distance between the infinite planes is within tolerance, they are coplanar
-            return planeDistanceDot <= Tolerance;
-        }
-
-        static double Calculate2DIntersectionArea(Face f1, Face f2)
-        {
-            // --- Step 1: Determine the Best Projection Plane ---
-            // Calculate an unnormalized normal vector using Face 1's diagonals
-            Vector3d diagA = f1.Corners[2] - f1.Corners[0];
-            Vector3d diagB = f1.Corners[3] - f1.Corners[1];
-            Vector3d normal = new Vector3d(
-                diagA.Y * diagB.Z - diagA.Z * diagB.Y,
-                diagA.Z * diagB.X - diagA.X * diagB.Z,
-                diagA.X * diagB.Y - diagA.Y * diagB.X
-            );
-
-            double nx = Abs(normal.X);
-            double ny = Abs(normal.Y);
-            double nz = Abs(normal.Z);
-            double len = Sqrt(nx * nx + ny * ny + nz * nz);
-            if (len < 1e-12) return 0.0; // Degenerate face
-
-            // Identify which axis is dominant to drop it (maximizes 2D area/precision)
-            int dropAxis = 2; // Default drop Z (work in XY)
-            if (nx > ny && nx > nz) dropAxis = 0; // Drop X (work in YZ)
-            else if (ny > nx && ny > nz) dropAxis = 1; // Drop Y (work in XZ)
-
-            // Project 3D vertices to 2D
-            Vector2d[] poly1 = ProjectTo2D(f1.Corners, dropAxis);
-            Vector2d[] poly2 = ProjectTo2D(f2.Corners, dropAxis);
-
-            // --- Step 2: Clip Polygons Using Sutherland-Hodgman ---
-            List<Vector2d> clippedPolygon = ClipPolygons(poly1, poly2);
-            if (clippedPolygon.Count < 3) return 0.0; // No meaningful overlap
-
-            // --- Step 3: Compute 2D Area and Scale Back to 3D Space ---
-            double area2D = Compute2DArea(clippedPolygon);
-
-            // Correction factor for the dropped projection tilt: 3D_Area = 2D_Area / cos(theta)
-            // cos(theta) is equivalent to the dominant component divided by the total normal length
-            double cosTheta = (dropAxis == 0 ? nx : (dropAxis == 1 ? ny : nz)) / len;
-
-            return area2D / cosTheta;
-        }
-
-        static void RegisterGridConnection(Face f1, Face f2, double area)
-        {
-            double x1 = f1.Permeability / f1.PerpendicularDistance2Center;
-            double x2 = f2.Permeability / f2.PerpendicularDistance2Center;
-
-            // Guard against zero-permeability shale barriers or zero distance
-            double denom = x1 + x2;
-            double T = (denom > 0.0) ? (alpha * area * (x1 * x2) / denom) : 0.0;
-
-            AddConnection(f1, f2.GlobalGridIndex, T);
-            AddConnection(f2, f1.GlobalGridIndex, T);
-        }
-
-        static void AddConnection(Face f, int neighborIdx, double trans)
-        {
-            if (trans <= 0.0) return;
-
-            int existing = f.GridIndices.IndexOf(neighborIdx);
-            if (existing >= 0)
-            {
-                f.Transmissibility[existing] += trans;
-            }
-            else
-            {
-                f.GridIndices.Add(neighborIdx);
-                f.Transmissibility.Add(trans);
-            }
-        }
-
-
 
         static Vector2d[] ProjectTo2D(Vector3d[] vertices, int dropAxis)
         {
@@ -370,6 +150,68 @@ namespace ReservoirSimulator
             return (edgeEnd.X - edgeStart.X) * (p.Y - edgeStart.Y) - (edgeEnd.Y - edgeStart.Y) * (p.X - edgeStart.X) >= -1e-10;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static double CalculateTetrahedronVolume(Vector3d v0, Vector3d v1, Vector3d v2, Vector3d v3)
+        {
+            // Vectorize edge profiles
+            Vector3d edge1 = v1 - v0;
+            Vector3d edge2 = v2 - v0;
+            Vector3d edge3 = v3 - v0;
+
+            // Triple scalar product: edge1 . (edge2 x edge3)
+            Vector3d crossProduct = Vector3d.Cross(edge2, edge3);
+            double tripleProduct = Vector3d.Dot(edge1, crossProduct);
+
+            // Volume is exactly 1/6th of the parallelpiped volume
+            return Abs(tripleProduct) / 6.0;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static double ComputeHexahedronVolume<T>(Grid<T> grid) where T : struct, IVectorND<T>
+        {
+            // Sanity Check: Ensure we have exactly 8 corners
+            if (grid.Corners.Length != 8) throw new ArgumentException("Hexahedron must have exactly 8 corners.");
+
+            // Sum the volumes of the 12 constituent tetrahedrons
+            double totalVolume = 0;
+            foreach(var face in grid.Faces)
+            {
+                totalVolume += CalculateTetrahedronVolume(grid.Center, face.Corners[0], face.Corners[1], face.Corners[2]);
+                totalVolume += CalculateTetrahedronVolume(grid.Center, face.Corners[0], face.Corners[2], face.Corners[3]);
+            }
+
+            // Guard against degenerate/pinched-out dead cells
+            if (double.IsNaN(totalVolume) || totalVolume < 1e-6)  return 0.0;
+
+            return totalVolume;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+
+        internal static double ComputePerpendicularDistance(Vector3d cellCenter, Vector3d p0, Vector3d p1, Vector3d p2, Vector3d p3)
+        {
+            // Step 1: Calculate two diagonal vectors from the face corners
+            Vector3d d1 = p2 - p0,  d2 = p3 - p1;
+
+            // Step 2 & 3: Compute the face normal and normalize it to a unit vector
+            Vector3d normalLarge = Vector3d.Cross(d1, d2);
+            double magnitude = normalLarge.Magnitude();
+
+            // Guard against completely collapsed/zero-area faces
+            if (magnitude < 1e-12) return 0.0;
+            Vector3d unitNormal = (1.0 / magnitude) * normalLarge;
+
+            // Step 4: Anchor at the face centroid rather than a single corner
+            Vector3d faceCenter = 0.25 * (p0 + p1 + p2 + p3);
+            Vector3d vCenter = cellCenter - faceCenter;
+
+            // Step 5: Dot product projects the center vector onto the perpendicular normal track
+            double distance = Vector3d.Dot(vCenter, unitNormal);
+
+            // Return absolute distance (direction relative to the normal does not matter for transmissibility)
+            return Abs(distance);
+        }
+
         static Vector2d ComputeIntersection(Vector2d s, Vector2d e, Vector2d edgeStart, Vector2d edgeEnd)
         {
             double dcX = edgeStart.X - edgeEnd.X;
@@ -402,8 +244,11 @@ namespace ReservoirSimulator
             return Abs(area * 0.5);
         }
 
-        public static List<PressureDepthPair> IntegrateLegRK4(double zStart, double pStart, double zEnd, int N, Func<double, double> getGradient)
+        internal static List<PressureDepthPair> IntegrateLegRK4(double zStart, double pStart, double zEnd, int N, Func<double, double> getGradient)
         {
+            if (N <= 0 || zStart == zEnd)
+                return [new PressureDepthPair(zStart, pStart), new PressureDepthPair(zEnd, pStart)];
+
             var table = new List<PressureDepthPair>();
             double currentZ = zStart;
             double currentP = pStart;
@@ -422,18 +267,7 @@ namespace ReservoirSimulator
             return table;
         }
 
-        /// <summary>
-        /// Linearly interpolates ANY target column from ANY independent search column within a table.
-        /// </summary>
-        /// <param name="rows">The raw list of table rows from your deck parser.</param>
-        /// <param name="targetValue">The known value you are querying with.</param>
-        /// <param name="searchSelector">Lambda matching the independent variable column (e.g., r => r.Pc).</param>
-        /// <param name="targetSelector">Lambda matching the dependent target column to retrieve (e.g., r => r.Sw).</param>
-        public static double Interpolate<T>(
-            List<T> rows,
-            double targetValue,
-            Func<T, double> searchSelector,
-            Func<T, double> targetSelector)
+        internal static double Interpolate<T>(List<T> rows, double targetValue, Func<T, double> searchSelector, Func<T, double> targetSelector)
         {
             if (rows == null)
                 throw new ArgumentNullException(nameof(rows), "Table data cannot be null.");
@@ -507,7 +341,6 @@ namespace ReservoirSimulator
                 if (Actnum[m] > 0)
                 {
                     grid.Er = Er;
-                    grid.MakeFaces();
                     grid.ActiveIndex = numActiveGrids++;
                     foreach (var face in grid.Faces)
                         face.GlobalGridIndex = m;
@@ -516,10 +349,10 @@ namespace ReservoirSimulator
             return numActiveGrids;
         }
 
-        public static void SetPVDO<T>(Grid<T>[] Grids, List<int> Pvtnum,  PVDOAnalysis[] pvdo, double γo0) where T : struct, IVectorND<T>
+        public static void SetPVDO<T>(Grid<T>[] Grids, List<int> Pvtnum, PVDOAnalysis[] pvdo, double γo0) where T : struct, IVectorND<T>
         {
-            foreach(var grid in Grids)
-            { 
+            foreach (var grid in Grids)
+            {
                 if (!grid.isActive) continue;
                 grid.Bo = Po => pvdo[Pvtnum[grid.GlobalIndex]].Result.EvaluateBo(Po);
                 grid.μo = Po => pvdo[Pvtnum[grid.GlobalIndex]].Result.EvaluateMuo(Po);
@@ -529,7 +362,7 @@ namespace ReservoirSimulator
 
         public static void SetPVDG<T>(Grid<T>[] Grids, List<int> Pvtnum, PVDGAnalysis[] pvdg, double γg0) where T : struct, IVectorND<T>
         {
-            foreach(var grid in Grids)
+            foreach (var grid in Grids)
             {
                 if (!grid.isActive) continue;
                 grid.Bg = Pg => pvdg[Pvtnum[grid.GlobalIndex]].Result.EvaluateBg(Pg);
@@ -540,7 +373,7 @@ namespace ReservoirSimulator
 
         public static void SetPVTO<T>(Grid<T>[] Grids, List<int> Pvtnum, PVTOAnalysis[] pvto, double γo0, double γg0) where T : struct, IVectorND<T>
         {
-            foreach(var grid in Grids)
+            foreach (var grid in Grids)
             {
                 if (!grid.isActive) continue;
                 grid.Rs = Po => pvto[Pvtnum[grid.GlobalIndex]].Result.EvaluateRs(Po);
@@ -552,7 +385,7 @@ namespace ReservoirSimulator
 
         public static void SetPVTG<T>(Grid<T>[] Grids, List<int> Pvtnum, PVTGAnalysis[] pvtg, double γo0, double γg0) where T : struct, IVectorND<T>
         {
-            foreach(var grid in Grids)
+            foreach (var grid in Grids)
             {
                 if (!grid.isActive) continue;
                 grid.Rv = Pg => pvtg[Pvtnum[grid.GlobalIndex]].Result.EvaluateRv(Pg);
@@ -564,7 +397,7 @@ namespace ReservoirSimulator
 
         public static void SetPVTW<T>(Grid<T>[] Grids, List<int> Pvtnum, PVTWAnalysis[] pvtw, double γw0) where T : struct, IVectorND<T>
         {
-            foreach(var grid in Grids)
+            foreach (var grid in Grids)
             {
                 if (!grid.isActive) continue;
                 grid.Bw = Pw => pvtw[Pvtnum[grid.GlobalIndex]].Result.EvaluateBw(Pw);
@@ -575,7 +408,7 @@ namespace ReservoirSimulator
 
         public static void SetSWOF<T>(Grid<T>[] Grids, List<int> Satnum, SWOFAnalysis[] swof) where T : struct, IVectorND<T>
         {
-            foreach(var grid in Grids)
+            foreach (var grid in Grids)
             {
                 if (!grid.isActive) continue;
                 grid.Krw = Sw => swof[Satnum[grid.GlobalIndex]].Result.EvaluateKrw(Sw);
@@ -586,7 +419,7 @@ namespace ReservoirSimulator
 
         public static void SetSGOF<T>(Grid<T>[] Grids, List<int> Satnum, SGOFAnalysis[] sgof) where T : struct, IVectorND<T>
         {
-            foreach(var grid in Grids)
+            foreach (var grid in Grids)
             {
                 if (!grid.isActive) continue;
                 grid.Krg = Sg => sgof[Satnum[grid.GlobalIndex]].Result.EvaluateKrg(Sg);
@@ -595,7 +428,20 @@ namespace ReservoirSimulator
             }
         }
 
-        public static Grid<T>[] ProcessGrid<T>(int nx, int ny, int nz, double[] coord, double[] zcorn, 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static ADiff<T> SmoothUpstream<T>(ADiff<T> dPhi, ADiff<T> mob_i, ADiff<T> mob_j, double eps = 1e-2) where T : struct, IVectorND<T>
+        {
+            double v = dPhi.Value;
+            if (v >= eps) return mob_i;
+            if (v <= -eps) return mob_j;
+
+            // C1-continuous cubic Hermite transition on [-eps, +eps]
+            var t = dPhi / eps;
+            var w = 0.5 + 0.75 * t - 0.25 * t * t * t;
+            return w * mob_i + (1.0 - w) * mob_j;
+        }
+
+        internal static Grid<T>[] ProcessGrid<T>(int nx, int ny, int nz, double[] coord, double[] zcorn,
             double[] Φ, double[] permx, double[] permy, double[] permz) where T : struct, IVectorND<T>
         {
             int nxny = nx * ny, ngrids = nxny * nz, nx2 = nx * 2, ny2 = ny * 2;
@@ -610,11 +456,11 @@ namespace ReservoirSimulator
                     Porosity = Φ[m],
                     Corners = new Vector3d[8]
                 };
-                Grids[m].Faces[0].Permeability = permz[m];
-                Grids[m].Faces[1].Permeability = permy[m];
-                Grids[m].Faces[2].Permeability = permx[m];
-                Grids[m].Faces[3].Permeability = permx[m];
-                Grids[m].Faces[4].Permeability = permy[m];
+                Grids[m].Faces[0].Permeability = permx[m];
+                Grids[m].Faces[1].Permeability = permx[m];
+                Grids[m].Faces[2].Permeability = permy[m];
+                Grids[m].Faces[3].Permeability = permy[m];
+                Grids[m].Faces[4].Permeability = permz[m];
                 Grids[m].Faces[5].Permeability = permz[m];
 
                 // Total number of coordinate lines in X and Y directions
@@ -657,6 +503,8 @@ namespace ReservoirSimulator
                     // Save the exact 3D location (Overriding the Z lane with the explicit target depth)
                     Grids[m].Corners[c] = new Vector3d(xyPlaneInterpolated.X, xyPlaneInterpolated.Y, targetZ);
                 }
+                Grids[m].MakeFaces();
+
             }
             return Grids;
         }
@@ -703,37 +551,309 @@ namespace ReservoirSimulator
                 Grids[m].Corners[5] = new Vector3d(xhi, ylo, zlo);     // Point 5
                 Grids[m].Corners[6] = new Vector3d(xhi, yhi, zlo);     // Point 6
                 Grids[m].Corners[7] = new Vector3d(xlo, yhi, zlo);     // Point 7
+                Grids[m].MakeFaces();
             }
             return Grids;
         }
 
-        public static (double slope, double intercept, double rSquared) LinearRegression(List<double> x, List<double> y)
+        static double CalculateFaultIntersectionArea(Face f1, Face f2)
         {
-            int n = x.Count;
-            if (n < 2) return (1.0, 0.0, 0.0);
+            Vector3d diagA = f1.Corners[2] - f1.Corners[0];
+            Vector3d diagB = f1.Corners[3] - f1.Corners[1];
+            Vector3d normal = Vector3d.Cross(diagA, diagB);
 
-            double sumX = x.Sum(); double sumY = y.Sum();
-            double sumXY = x.Zip(y, (xi, yi) => xi * yi).Sum();
-            double sumXSq = x.Sum(xi => Sqr(xi));
+            double nx = Abs(normal.X);
+            double ny = Abs(normal.Y);
+            double nz = Abs(normal.Z);
+            double len = Sqrt(nx * nx + ny * ny + nz * nz);
+            if (len < 1e-12) return 0.0;
 
-            double denominator = (n * sumXSq) - (sumX * sumX);
-            if (Abs(denominator) < 1e-11) return (1.0, 0.0, 0.0);
+            // Drop the dominant normal axis to maximize 2D projection precision
+            int dropAxis = 2;
+            if (nx > ny && nx > nz) dropAxis = 0;
+            else if (ny > nx && ny > nz) dropAxis = 1;
 
-            double m = ((n * sumXY) - (sumX * sumY)) / denominator;
-            double b = (sumY - (m * sumX)) / n;
+            Vector2d[] poly1 = ProjectTo2D(f1.Corners, dropAxis);
+            Vector2d[] poly2 = ProjectTo2D(f2.Corners, dropAxis);
 
-            double yMean = sumY / n;
-            double ssTot = y.Sum(yi => Sqr(yi - yMean));
-            double ssRes = y.Zip(x, (yi, xi) => Sqr(yi - (m * xi + b))).Sum();
-            double rSq = ssTot > 0 ? 1.0 - (ssRes / ssTot) : 1.0;
+            // Essential: f1 and f2 have opposite 3D outward normals, so one projects CW and one CCW.
+            // Normalizing both to CCW prevents Sutherland-Hodgman from inverting the clip half-planes.
+            EnsureCounterClockwise(poly1);
+            EnsureCounterClockwise(poly2);
 
-            return (m, b, rSq);
+            List<Vector2d> clippedPolygon = ClipPolygons(poly1, poly2);
+            if (clippedPolygon.Count < 3) return 0.0;
+
+            double area2D = Compute2DArea(clippedPolygon);
+            double cosTheta = (dropAxis == 0 ? nx : (dropAxis == 1 ? ny : nz)) / len;
+
+            return area2D / cosTheta;
         }
 
-        internal static void AddIfPresent(List<double> list, double? value)
+        static void EnsureCounterClockwise(Vector2d[] poly)
         {
-            if (value.HasValue)
-                list.Add(value.GetValueOrDefault());
+            double signedArea2 = 0.0;
+            for (int i = 0; i < poly.Length; i++)
+            {
+                Vector2d a = poly[i];
+                Vector2d b = poly[(i + 1) % poly.Length];
+                signedArea2 += (a.X * b.Y - b.X * a.Y);
+            }
+            if (signedArea2 < 0.0)
+                Array.Reverse(poly);
         }
+
+        public static void BuildStructuredConnections<T>(
+            Grid<T>[] Grids, int nx, int ny, int nz)
+            where T : struct, IVectorND<T>
+        {
+            int Idx(int i, int j, int k) => i + nx * (j + ny * k);
+
+            for (int m = 0; m < Grids.Length; m++)
+            {
+                var g = Grids[m];
+                if (g?.Faces == null) continue;
+                for (int f = 0; f < 6; f++)
+                {
+                    g.Faces[f].GridIndices.Clear();
+                    g.Faces[f].Transmissibility.Clear();
+                }
+            }
+
+            for (int j = 0; j < ny; j++)
+            {
+                for (int i = 0; i < nx; i++)
+                {
+                    // -----------------------------------------------------------------
+                    // 1. +I Interfaces: Column (i, j) <-> Column (i + 1, j)
+                    //    Faces[1] (+I) <-> Faces[0] (-I)
+                    // -----------------------------------------------------------------
+                    if (i + 1 < nx)
+                    {
+                        if (IsPillarFaulted(Grids, nx, ny, nz, i, j, 1, i + 1, j, 0))
+                        {
+                            ConnectFaultedColumnPair(Grids, nx, ny, nz, i, j, 1, i + 1, j, 0, alpha, applyNTG: true);
+                        }
+                        else
+                        {
+                            for (int k = 0; k < nz; k++)
+                            {
+                                var c1 = Grids[Idx(i, j, k)];
+                                var c2 = Grids[Idx(i + 1, j, k)];
+                                if (!c1.isActive || !c2.isActive) continue;
+
+                                double area = 0.5 * (c1.Faces[1].Area + c2.Faces[0].Area);
+                                double ntgFactor = 0.5 * (c1.NTG + c2.NTG);
+                                RegisterGridConnection(c1.Faces[1], c2.Faces[0], area * ntgFactor);
+                            }
+                        }
+                    }
+
+                    // -----------------------------------------------------------------
+                    // 2. +J Interfaces: Column (i, j) <-> Column (i, j + 1)
+                    //    Faces[3] (+J) <-> Faces[2] (-J)
+                    // -----------------------------------------------------------------
+                    if (j + 1 < ny)
+                    {
+                        if (IsPillarFaulted(Grids, nx, ny, nz, i, j, 3, i, j + 1, 2))
+                        {
+                            ConnectFaultedColumnPair(Grids, nx, ny, nz, i, j, 3, i, j + 1, 2, alpha, applyNTG: true);
+                        }
+                        else
+                        {
+                            for (int k = 0; k < nz; k++)
+                            {
+                                var c1 = Grids[Idx(i, j, k)];
+                                var c2 = Grids[Idx(i, j + 1, k)];
+                                if (!c1.isActive || !c2.isActive) continue;
+
+                                double area = 0.5 * (c1.Faces[3].Area + c2.Faces[2].Area);
+                                double ntgFactor = 0.5 * (c1.NTG + c2.NTG);
+                                RegisterGridConnection(c1.Faces[3], c2.Faces[2], area * ntgFactor);
+                            }
+                        }
+                    }
+
+                    // -----------------------------------------------------------------
+                    // 3. +K Interfaces: Down Column (i, j) from k -> k + 1
+                    //    Faces[5] (+K) <-> Faces[4] (-K), skipping zero-thickness pinch-outs
+                    // -----------------------------------------------------------------
+                    for (int k = 0; k + 1 < nz; k++)
+                    {
+                        var c1 = Grids[Idx(i, j, k)];
+                        if (!c1.isActive) continue;
+
+                        int kNext = k + 1;
+                        while (kNext < nz && !Grids[Idx(i, j, kNext)].isActive &&
+                               Grids[Idx(i, j, kNext)].Faces[1].Area <= 1e-9)
+                        {
+                            kNext++;
+                        }
+
+                        if (kNext < nz)
+                        {
+                            var c2 = Grids[Idx(i, j, kNext)];
+                            if (!c2.isActive) continue;
+
+                            double area = 0.5 * (c1.Faces[5].Area + c2.Faces[4].Area);
+                            RegisterGridConnection(c1.Faces[5], c2.Faces[4], area);
+                        }
+                    }
+                }
+            }
+        }
+
+
+        static bool IsPillarFaulted<T>(
+            Grid<T>[] Grids, int nx, int ny, int nz,
+            int iA, int jA, int faceIdxA,
+            int iB, int jB, int faceIdxB,
+            double tol = 1e-4)
+            where T : struct, IVectorND<T>
+        {
+            int Idx(int ii, int jj, int kk) => ii + nx * (jj + ny * kk);
+
+            for (int k = 0; k < nz; k++)
+            {
+                var cA = Grids[Idx(iA, jA, k)].Corners;
+                var cB = Grids[Idx(iB, jB, k)].Corners;
+
+                if (faceIdxA == 1) // +I (cA: 1,2,6,5) vs -I (cB: 0,3,7,4)
+                {
+                    if (Abs(cA[1].Z - cB[0].Z) > tol ||
+                        Abs(cA[2].Z - cB[3].Z) > tol ||
+                        Abs(cA[6].Z - cB[7].Z) > tol ||
+                        Abs(cA[5].Z - cB[4].Z) > tol)
+                        return true;
+                }
+                else // +J (cA: 3,2,6,7) vs -J (cB: 0,1,5,4)
+                {
+                    if (Abs(cA[3].Z - cB[0].Z) > tol ||
+                        Abs(cA[2].Z - cB[1].Z) > tol ||
+                        Abs(cA[6].Z - cB[5].Z) > tol ||
+                        Abs(cA[7].Z - cB[4].Z) > tol)
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        static void ConnectFaultedColumnPair<T>(
+            Grid<T>[] Grids, int nx, int ny, int nz,
+            int iA, int jA, int faceIdxA,
+            int iB, int jB, int faceIdxB,
+            double alpha, bool applyNTG)
+            where T : struct, IVectorND<T>
+        {
+            int Idx(int ii, int jj, int kk) => ii + nx * (jj + ny * kk);
+
+            for (int kA = 0; kA < nz; kA++)
+            {
+                var cA = Grids[Idx(iA, jA, kA)];
+                if (!cA.isActive) continue;
+
+                var fA = cA.Faces[faceIdxA];
+                if (fA.Area <= 1e-9) continue;
+
+                GetFaceZBounds(fA, out double minZA, out double maxZA);
+
+                for (int kB = 0; kB < nz; kB++)
+                {
+                    var cB = Grids[Idx(iB, jB, kB)];
+                    if (!cB.isActive) continue;
+
+                    var fB = cB.Faces[faceIdxB];
+                    if (fB.Area <= 1e-9) continue;
+
+                    GetFaceZBounds(fB, out double minZB, out double maxZB);
+
+                    if (maxZA <= minZB + 1e-6 || maxZB <= minZA + 1e-6)
+                        continue;
+
+                    double sharedArea = CalculateFaultIntersectionArea(fA, fB);
+                    if (sharedArea > 1e-6)
+                    {
+                        double areaEff = applyNTG ? sharedArea * 0.5 * (cA.NTG + cB.NTG) : sharedArea;
+                        RegisterGridConnection(fA, fB, areaEff);
+                    }
+                }
+            }
+        }
+
+        static void RegisterGridConnection(Face f1, Face f2, double effectiveArea)
+        {
+            if (effectiveArea <= 0.0 || f1.PerpendicularDistance2Center <= 0.0 || f2.PerpendicularDistance2Center <= 0.0)
+                return;
+
+            double x1 = f1.Permeability / f1.PerpendicularDistance2Center;
+            double x2 = f2.Permeability / f2.PerpendicularDistance2Center;
+
+            double denom = x1 + x2;
+            double T = (denom > 0.0) ? (alpha * effectiveArea * (x1 * x2) / denom) : 0.0;
+
+            if (T <= 0.0) return;
+
+            AddConnection(f1, f2.GlobalGridIndex, T);
+            AddConnection(f2, f1.GlobalGridIndex, T);
+        }
+
+        static void AddConnection(Face f, int neighborGlobalIdx, double trans)
+        {
+            int existing = f.GridIndices.IndexOf(neighborGlobalIdx);
+            if (existing >= 0)
+            {
+                f.Transmissibility[existing] += trans;
+            }
+            else
+            {
+                f.GridIndices.Add(neighborGlobalIdx);
+                f.Transmissibility.Add(trans);
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void GetFaceZBounds(Face f, out double minZ, out double maxZ)
+        {
+            double z0 = f.Corners[0].Z, z1 = f.Corners[1].Z, z2 = f.Corners[2].Z, z3 = f.Corners[3].Z;
+            minZ = Min(Min(z0, z1), Min(z2, z3));
+            maxZ = Max(Max(z0, z1), Max(z2, z3));
+        }
+
+        internal static void checkconnectivity<T>(Grid<T>[] Grids, int JacLength) where T : struct, IVectorND<T>
+        {
+            {
+                int activeCells = 0;
+                long totalUniqueNeighborPairs = 0;
+                int[] neighborHistogram = new int[10]; // counts cells with 0, 1, 2, ..., 6+ neighbors
+
+                foreach (var grid in Grids)
+                {
+                    if (!grid.isActive) continue;
+                    activeCells++;
+
+                    var uniqueNeighbors = new HashSet<int>();
+                    foreach (var face in grid.Faces)
+                    {
+                        for (int c = 0; c < face.GridIndices.Count; c++)
+                        {
+                            int nIdx = face.GridIndices[c];
+                            if (Grids[nIdx].isActive && face.Transmissibility[c] > 0.0)
+                                uniqueNeighbors.Add(Grids[nIdx].ActiveIndex);
+                        }
+                    }
+
+                    int count = uniqueNeighbors.Count;
+                    totalUniqueNeighborPairs += count;
+                    neighborHistogram[Min(count, 9)]++;
+                }
+
+                long expectedJacNnz = 4L * activeCells + 4L * totalUniqueNeighborPairs;
+                Console.WriteLine($"Active cells: {activeCells} | Total neighbor links: {totalUniqueNeighborPairs}");
+                Console.WriteLine($"Expected JacValues.Length: {expectedJacNnz} | Actual: {JacLength}");
+                Console.WriteLine("Neighbor count distribution (0..6+): " +
+                    string.Join(", ", Enumerable.Range(0, 10).Select(k => $"{k}:{neighborHistogram[k]}")));
+            }
+        }
+
     }
 }

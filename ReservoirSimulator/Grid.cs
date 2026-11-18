@@ -33,18 +33,20 @@ namespace ReservoirSimulator
             Center = new();
             for (int i = 0; i < 8; i++) Center += Corners[i];
             Center /= 8.0;
-            Faces[0].Corners = [Corners[0], Corners[3], Corners[2], Corners[1]]; Faces[0].MakeBoundBox(); // Top (-K)
-            Faces[1].Corners = [Corners[0], Corners[1], Corners[5], Corners[4]]; Faces[1].MakeBoundBox(); // Front (-J)
-            Faces[2].Corners = [Corners[0], Corners[4], Corners[7], Corners[3]]; Faces[2].MakeBoundBox(); // Left (-I)
-            Faces[3].Corners = [Corners[1], Corners[2], Corners[6], Corners[5]]; Faces[3].MakeBoundBox(); // Right (+I)
-            Faces[4].Corners = [Corners[3], Corners[7], Corners[6], Corners[2]]; Faces[4].MakeBoundBox(); // Back (+J)
-            Faces[5].Corners = [Corners[4], Corners[5], Corners[6], Corners[7]]; Faces[5].MakeBoundBox(); // Bottom (+K)
-            
-            PoreVolume = Utility.ComputeHexahedronVolume(this) * Porosity / beta;
-            InvPoreVolume = 1 / PoreVolume;
+
+            Faces[0].Corners = [Corners[0], Corners[4], Corners[7], Corners[3]];  // Left (-I)
+            Faces[1].Corners = [Corners[1], Corners[2], Corners[6], Corners[5]];  // Right (+I)
+            Faces[2].Corners = [Corners[0], Corners[1], Corners[5], Corners[4]];  // Front (-J)
+            Faces[3].Corners = [Corners[3], Corners[7], Corners[6], Corners[2]];  // Back (+J)
+            Faces[4].Corners = [Corners[0], Corners[3], Corners[2], Corners[1]];  // Top (-K)
+            Faces[5].Corners = [Corners[4], Corners[5], Corners[6], Corners[7]];  // Bottom (+K)
+
+            PoreVolume = Utility.ComputeHexahedronVolume(this) * NTG * Porosity / beta;
+            InvPoreVolume = 1.0 / PoreVolume;
 
             foreach (var face in Faces)
             {
+                face.ComputeArea();
                 face.GlobalGridIndex = GlobalIndex;
                 face.Center = new();
                 foreach (var corner in face.Corners) face.Center += corner;

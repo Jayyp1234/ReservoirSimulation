@@ -6,10 +6,8 @@ namespace ReservoirSimulator
 {
     public static class ReservoirJacobian
     {
-        public static (int totalDofs, int[] col_index, int[] row_ptr, double[] values) Create<T>(
-            int nc,          // 2 for Vector4d, 3 for Vector6d, 4 for Vector8d
-            IReadOnlyList<Grid<T>> Grids,
-            IReadOnlyList<Well<T>> Wells) where T : struct, IVectorND<T>
+        public static (int totalDofs, int[] col_index, int[] row_ptr, double[] values) Create<T>
+            (int nc, IReadOnlyList<Grid<T>> Grids, IReadOnlyList<Well<T>> Wells) where T : struct, IVectorND<T>
         {
             int numWells = Wells.Count;
             int numActiveGrids = Grids.Count(grid => grid.isActive);
@@ -21,7 +19,6 @@ namespace ReservoirSimulator
             foreach (var mgrid in Grids)
             {
                 if (!mgrid.isActive) continue;
-
                 foreach (var face in mgrid.Faces)
                 {
                     foreach (int c in face.GridIndices)
@@ -40,58 +37,49 @@ namespace ReservoirSimulator
                 }
             }
 
-            int capacity = (totalGridBlocks * nc * nc)
-                         + (numWells * 4)
+            int capacity = (totalGridBlocks * nc * nc) + (numWells * 4)
                          + (totalActivePerfs * 4 * nc);
 
-            List<int> I = new(capacity);
-            List<int> J = new(capacity);
+            List<int> I = new(capacity), J = new(capacity);
 
             void AddBlock(int i, int j)
             {
-                int I0 = i * nc;
-                int J0 = j * nc;
+                int I0 = i * nc, J0 = j * nc;
                 for (int ii = 0; ii < nc; ii++)
+                {
                     for (int jj = 0; jj < nc; jj++)
-                    {
-                        I.Add(I0 + ii);
-                        J.Add(J0 + jj);
-                    }
+                    { I.Add(I0 + ii); J.Add(J0 + jj); }
+                }
             }
 
             void AddGridWellBlock(int gridActiveIdx, int wellIdx)
             {
-                int I0 = gridActiveIdx * nc;
-                int J0 = nc * numActiveGrids + 2 * wellIdx;
+                int I0 = gridActiveIdx * nc,  J0 = nc * numActiveGrids + 2 * wellIdx;
                 for (int ii = 0; ii < nc; ii++)
+                {
                     for (int jj = 0; jj < 2; jj++)
-                    {
-                        I.Add(I0 + ii);
-                        J.Add(J0 + jj);
-                    }
+                    { I.Add(I0 + ii); J.Add(J0 + jj); }
+                }
             }
 
             void AddWellGridBlock(int activeWellIdx, int gridActiveIdx)
             {
-                int I0 = nc * numActiveGrids + 2 * activeWellIdx;
-                int J0 = gridActiveIdx * nc;
+                int I0 = nc * numActiveGrids + 2 * activeWellIdx, J0 = gridActiveIdx * nc;
                 for (int ii = 0; ii < 2; ii++)
+                {
                     for (int jj = 0; jj < nc; jj++)
-                    {
-                        I.Add(I0 + ii);
-                        J.Add(J0 + jj);
-                    }
+                    { I.Add(I0 + ii); J.Add(J0 + jj); }
+                }
             }
 
             void AddWellInternalBlock(int activeWellIdx)
             {
                 int I0 = nc * numActiveGrids + 2 * activeWellIdx;
                 for (int ii = 0; ii < 2; ii++)
+                {
                     for (int jj = 0; jj < 2; jj++)
-                    {
-                        I.Add(I0 + ii);
-                        J.Add(I0 + jj);
-                    }
+                    { I.Add(I0 + ii); J.Add(I0 + jj); }
+                }
             }
 
             // 3. Grid Cells and Face Neighbor Connections
@@ -134,7 +122,6 @@ namespace ReservoirSimulator
             var crs = jac.CompressByRow();
             return (totalDofs, [.. crs.col_index], [.. crs.row_start], [.. crs.values]);
         }
-
 
         public readonly struct CellOffsets
         {
@@ -186,7 +173,7 @@ namespace ReservoirSimulator
 
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int FindValueIndex(int[] row_ptr, int[] col_index, int row, int col)
+        static int FindValueIndex(int[] row_ptr, int[] col_index, int row, int col)
         {
             int start = row_ptr[row];
             int length = row_ptr[row + 1] - start;
@@ -194,12 +181,8 @@ namespace ReservoirSimulator
             return idx;
         }
 
-        public static (CellOffsets[] cellOffsets, FaceOffsets[][][] faceOffsets, WellOffsets[] wellOffsets) PrecomputeOffsets<T>(
-            int nc,
-            int[] row_ptr,
-            int[] col_index,
-            IReadOnlyList<Grid<T>> Grids,
-            IReadOnlyList<Well<T>> Wells) where T : struct, IVectorND<T>
+        public static (CellOffsets[] cellOffsets, FaceOffsets[][][] faceOffsets, WellOffsets[] wellOffsets) PrecomputeOffsets<T>
+            (int nc, int[] row_ptr, int[] col_index, IReadOnlyList<Grid<T>> Grids, IReadOnlyList<Well<T>> Wells) where T : struct, IVectorND<T>
         {
             int numWells = Wells.Count;
             int numActiveGrids = Grids.Count(grid => grid.isActive);
@@ -268,7 +251,7 @@ namespace ReservoirSimulator
             foreach (var well in Wells)
             {
                 if (!well.isActive) continue;
-
+                
                 int wIdx = well.ActiveIndex;
                 int row_p = nc * numActiveGrids + 2 * wIdx + 0;
                 int row_q = nc * numActiveGrids + 2 * wIdx + 1;

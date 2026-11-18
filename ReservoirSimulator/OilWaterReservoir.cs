@@ -4,6 +4,7 @@ using SepalSolver;
 using System.Text;
 using static ReservoirSimulator.Math;
 using static ReservoirSimulator.ReservoirJacobian;
+using static TorchSharp.torch.optim.lr_scheduler.impl;
 
 namespace ReservoirSimulator
 {
@@ -24,78 +25,6 @@ namespace ReservoirSimulator
                 if (Abs(ds) > maxDs) { maxDs = Abs(ds); i_s = i; }
             }
             return (maxDp, maxDs, i_p, i_s);
-        }
-        double dt, t = 0;
-        void InitialGuess(double[] xs, bool isRetry = false, bool wellEventOccurred = false)
-        {
-            int indx = 0;
-            int n = Time.Count - 1;
-            bool canExtrapolate = n >= 2 && !isRetry && !wellEventOccurred;
-            double omega = canExtrapolate ? Min(1.0, dt / (Time[n] - Time[n - 1])) : 0.0;
-
-            // 1. Reservoir Grid Unknowns (Po, Sw)
-            for (int m = 0; m < Ngrids; m++)
-            {
-                var mgrid = Grids[m];
-                if (!mgrid.isActive) continue;
-
-                double poGuess = mgrid.Po_n;
-                if (canExtrapolate)
-                    poGuess += omega * (mgrid.Po_n - mgrid.PO[n - 1]);
-
-                xs[indx++] = Max(14.7, poGuess); // Po index
-                xs[indx++] = mgrid.Sw_n;         // Sw index
-            }
-
-            // 2. Active Well Unknowns
-            for (int i = 0; i < Nwells; i++)
-            {
-                var well = Wells[i];
-                if (!well.isActive) continue;
-
-                switch (well.ConstraintType)
-                {
-                    case ConstraintType.MIN_BHP:
-                        xs[indx++] = well.CurrentControl.MinBhpLimit;
-                        xs[indx++] = well.IsWaterTarget ? well.Qw_n
-                                   : well.IsOilTarget ? well.Qo_n
-                                   : (well.Qo_n + well.Qw_n);
-                        break;
-
-                    case ConstraintType.MAX_BHP:
-                        xs[indx++] = well.CurrentControl.MaxBhpLimit;
-                        xs[indx++] = well.Qw_n;
-                        break;
-
-                    case ConstraintType.RATE:
-                        xs[indx++] = well.Pwf_n;
-                        xs[indx++] = well.CurrentControl.TargetRate;
-                        break;
-
-                    case ConstraintType.GRATE:
-                        xs[indx++] = well.Pwf_n;
-                        xs[indx++] = well.CurrentControl.GasRateTarget;
-                        break;
-
-                    case ConstraintType.ORATE:
-                        xs[indx++] = well.Pwf_n;
-                        xs[indx++] = well.CurrentControl.OilRateTarget;
-                        break;
-
-                    case ConstraintType.WRATE:
-                        xs[indx++] = well.Pwf_n;
-                        xs[indx++] = well.CurrentControl.WaterRateTarget;
-                        break;
-
-                    case ConstraintType.LRATE:
-                        xs[indx++] = well.Pwf_n;
-                        xs[indx++] = well.CurrentControl.LiquidRateTarget;
-                        break;
-
-                    default:
-                        throw new InvalidOperationException($"Unhandled well constraint type: {well.ConstraintType}");
-                }
-            }
         }
 
         readonly int Nx, Ny, Nz, NxNy, Ngrids, NumActiveGrids, Nwells, NumActiveWells;
@@ -185,12 +114,16 @@ namespace ReservoirSimulator
             Utility.SetPVTW(Grids, Data.PvtnumArray, PVTWs, γw0);
 
             // TRANSMISSIBILITY
-            Utility.ComputeFaceTransmissibility(Grids);
+            Utility.BuildStructuredConnections(Grids, Nx, Ny, Nz);
+            //Utility.ComputeFaceTransmissibility(Grids);
+            
 
-            // EQUIL
+            // 1. Build EQUIL Pressure-Depth Tables for every (EQUILNUM, PVTNUM) pair
             EQUILAnalysis[] EQUILs = [.. Data.RawEquilTables.Select(equil => new EQUILAnalysis(equil, incomingUnit))];
-            double MaxZ = Grids.Max(grid => grid.Center.Z), MinZ = Grids.Min(grid => grid.Center.Z);
-            for(int e = 0; e < EQUILs.Length; e++)
+            double MaxZ = Grids.Max(grid => grid.Center.Z);
+            double MinZ = Grids.Min(grid => grid.Center.Z);
+
+            for (int e = 0; e < EQUILs.Length; e++)
             {
                 for (int p = 0; p < PVDOs.Length; p++)
                 {
@@ -198,32 +131,48 @@ namespace ReservoirSimulator
                     double BoAtPref = pvdo.Result.BoAtPref, BwAtPref = pvtw.Result.BwAtPref;
                     double Co = pvdo.Result.Co, Cw = pvtw.Result.Cw;
                     double PRefo = pvdo.Result.PRef, PRefw = pvtw.Result.PRef;
-                    Func<double, double> γo = P => γo0 / (BoAtPref * Exp(-Co * (P - PRefo))), 
+                    Func<double, double> γo = P => γo0 / (BoAtPref * Exp(-Co * (P - PRefo))),
                                          γw = P => γw0 / (BwAtPref * Exp(-Cw * (P - PRefw)));
+
                     var equildata = new EQUILPressureDepth(equil);
-                    int N = (int)(Abs(equildata.ZDatum - equildata.ZWOC) / (MaxZ - MinZ) * Nz * 10);
+                    int nDatum = Max(10, (int)(Abs(equildata.ZDatum - equildata.ZWOC) / Max(1.0, MaxZ - MinZ) * Nz * 10));
+
                     if (equildata.ZDatum < equildata.ZWOC)
                     {
-                        var oil2WOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZWOC, N, γo);
-                        equildata.PoWOC = oil2WOC.Last().P; equildata.PwWOC = equildata.PoWOC - equildata.PcWOC;
+                        var oil2WOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZWOC, nDatum, γo);
+                        equildata.PoWOC = oil2WOC.Last().P;
+                        equildata.PwWOC = equildata.PoWOC - equildata.PcWOC;
                     }
                     else
                     {
-                        var water2WOC = Utility.IntegrateLegRK4(equil.ZDatum, equil.PDatum, equildata.ZWOC, N, γw);
-                        equildata.PwWOC = water2WOC.Last().P; equildata.PoWOC = equildata.PwWOC + equildata.PcWOC;
+                        var water2WOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZWOC, nDatum, γw);
+                        equildata.PwWOC = water2WOC.Last().P;
+                        equildata.PoWOC = equildata.PwWOC + equildata.PcWOC;
                     }
-                    N = (int)(Abs(MinZ - equildata.ZWOC) / (MaxZ - MinZ) * Nz);
-                    var OilPressureHeight1 = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PoWOC, MinZ, N, γo);
-                    var WaterPressureHeight1 = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PwWOC, MinZ, N, γw);
-                    
-                    OilPressureHeight1.Reverse(); equildata.OilZonePressureDepthPairs.AddRange(OilPressureHeight1);
-                    WaterPressureHeight1.Reverse(); equildata.WaterZonePressureDepthPairs.AddRange(WaterPressureHeight1);
 
-                    N = (int)((Abs(MaxZ - equildata.ZWOC) / (MaxZ - MinZ) * Nz));
-                    var WaterPressureHeight2 = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PwWOC, MaxZ, N, γw);
-                    equildata.WaterZonePressureDepthPairs.AddRange(WaterPressureHeight2[1..]);
-                    var OilPressureHeight2 = WaterPressureHeight2.Skip(1).Select(pz=>new PressureDepthPair(pz.Z, pz.P + equildata.PcWOC));
-                    equildata.OilZonePressureDepthPairs.AddRange(OilPressureHeight2);
+                    // Upper leg: Z from MinZ up to ZWOC (only if MinZ < ZWOC)
+                    if (MinZ < equildata.ZWOC)
+                    {
+                        int nUp = Max(10, (int)(Abs(MinZ - equildata.ZWOC) / Max(1.0, MaxZ - MinZ) * Nz));
+                        var oilUp = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PoWOC, MinZ, nUp, γo);
+                        var watUp = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PwWOC, MinZ, nUp, γw);
+
+                        oilUp.Reverse(); watUp.Reverse();
+                        equildata.OilZonePressureDepthPairs.AddRange(oilUp);
+                        equildata.WaterZonePressureDepthPairs.AddRange(watUp);
+                    }
+
+                    // Lower leg: Z from ZWOC down to MaxZ (only if MaxZ > ZWOC)
+                    if (MaxZ > equildata.ZWOC)
+                    {
+                        int nDown = Max(10, (int)(Abs(MaxZ - equildata.ZWOC) / Max(1.0, MaxZ - MinZ) * Nz));
+                        var watDown = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PwWOC, MaxZ, nDown, γw);
+                        var oilDown = watDown.Select(pz => new PressureDepthPair(pz.Z, pz.P + equildata.PcWOC));
+
+                        int skip = equildata.WaterZonePressureDepthPairs.Count > 0 ? 1 : 0;
+                        equildata.WaterZonePressureDepthPairs.AddRange(watDown.Skip(skip));
+                        equildata.OilZonePressureDepthPairs.AddRange(oilDown.Skip(skip));
+                    }
 
                     EquilPVTCombinations[(e, p)] = equildata;
                 }
@@ -240,26 +189,135 @@ namespace ReservoirSimulator
             for (int m = 0; m < Ngrids; m++)
             {
                 var grid = Grids[m];
-                if(!grid.isActive) continue;
-                int s = DATA.SatnumArray[m], e = DATA.EquinumArray[m], p = DATA.PvtnumArray[m];
+                if (!grid.isActive) continue;
+
+                int s = DATA.SatnumArray[m];
+                int e = DATA.EquinumArray[m];
+                int p = DATA.PvtnumArray[m];
 
                 var swoftable = SWOFs[s].swofTable;
                 var equildata = EquilPVTCombinations[(e, p)];
                 var oiltable = equildata.OilZonePressureDepthPairs;
                 var watertable = equildata.WaterZonePressureDepthPairs;
-                grid.Po_n = Utility.Interpolate(oiltable, grid.Center.Z, pair => pair.Z, pair => pair.P);
-                grid.Pw_n = Utility.Interpolate(watertable, grid.Center.Z, pair => pair.Z, pair => pair.P);
-                double pc = grid.Po_n - grid.Pw_n;
-                if (pc == 0)
-                    grid.Sw_n = grid.Center.Z < equildata.ZWOC ? swoftable.Min(swof => swof.Sw) : swoftable.Max(swof => swof.Sw);
-                else grid.Sw_n = Utility.Interpolate(swoftable, pc, swof => swof.Pc, swof => swof.Sw);
-                grid.So_n = 1 - grid.Sw_n;
+
+                double poEquil = Utility.Interpolate(oiltable, grid.Center.Z, pair => pair.Z, pair => pair.P);
+                double pwEquil = Utility.Interpolate(watertable, grid.Center.Z, pair => pair.Z, pair => pair.P);
+                double pc = poEquil - pwEquil;
+
+                double swMin = swoftable.Min(swof => swof.Sw);
+                double swMax = swoftable.Max(swof => swof.Sw);
+                double pcMin = swoftable.Min(swof => swof.Pc);
+                double pcMax = swoftable.Max(swof => swof.Pc);
+
+                if (pc <= pcMin)
+                {
+                    grid.Sw_n = swMax;
+                }
+                else if (pc >= pcMax)
+                {
+                    grid.Sw_n = swMin;
+                }
+                else
+                {
+                    // SWOF is ordered by ascending Sw (descending Pc); reverse to search ascending Pc
+                    var ascPcTable = swoftable.AsEnumerable().Reverse().ToList();
+                    grid.Sw_n = Utility.Interpolate(ascPcTable, pc, swof => swof.Pc, swof => swof.Sw);
+                }
+
+                grid.So_n = 1.0 - grid.Sw_n;
+
+                // Enforce exact algebraic consistency with Residual: Pw = Po - Pcow(Sw)
+                double pcActual = grid.Pcow(grid.Sw_n).Value;
+                if (grid.Center.Z >= equildata.ZWOC)
+                {
+                    grid.Pw_n = pwEquil;
+                    grid.Po_n = pwEquil + pcActual;
+                }
+                else
+                {
+                    grid.Po_n = poEquil;
+                    grid.Pw_n = poEquil - pcActual;
+                }
+
                 ADiff<Vector4d> meanP = grid.So_n * grid.Po_n + grid.Sw_n * grid.Pw_n;
                 ADiff<Vector4d> Er_i = grid.Er(meanP);
                 ADiff<Vector4d> Bo_i = grid.Bo(grid.Po_n);
                 ADiff<Vector4d> Bw_i = grid.Bw(grid.Pw_n);
+
                 grid.ErSo_Bo_n = (Er_i * grid.So_n / Bo_i).Value;
                 grid.ErSw_Bw_n = (Er_i * grid.Sw_n / Bw_i).Value;
+            }
+        }
+
+        void InitialGuess(double[] xs, double dt, bool isRetry = false, bool wellEventOccurred = false)
+        {
+            int indx = 0;
+            int n = Time.Count - 1;
+            bool canExtrapolate = n >= 2 && !isRetry && !wellEventOccurred;
+            double omega = canExtrapolate ? Min(1.0, dt / (Time[n] - Time[n - 1])) : 0.0;
+
+            // 1. Reservoir Grid Unknowns (Po, Sw)
+            for (int m = 0; m < Ngrids; m++)
+            {
+                var mgrid = Grids[m];
+                if (!mgrid.isActive) continue;
+
+                double poGuess = mgrid.Po_n;
+                if (canExtrapolate)
+                    poGuess += omega * (mgrid.Po_n - mgrid.PO[n - 1]);
+
+                xs[indx++] = Max(14.7, poGuess); // Po index
+                xs[indx++] = mgrid.Sw_n;         // Sw index
+            }
+
+            // 2. Active Well Unknowns
+            for (int i = 0; i < Nwells; i++)
+            {
+                var well = Wells[i];
+                if (!well.isActive) continue;
+
+                switch (well.ConstraintType)
+                {
+                    case ConstraintType.MIN_BHP:
+                        xs[indx++] = well.CurrentControl.MinBhpLimit;
+                        xs[indx++] = well.IsWaterTarget ? well.Qw_n
+                                   : well.IsOilTarget ? well.Qo_n
+                                   : (well.Qo_n + well.Qw_n);
+                        break;
+
+                    case ConstraintType.MAX_BHP:
+                        xs[indx++] = well.CurrentControl.MaxBhpLimit;
+                        xs[indx++] = well.Qw_n;
+                        break;
+
+                    case ConstraintType.RATE:
+                        xs[indx++] = well.Pwf_n;
+                        xs[indx++] = well.CurrentControl.TargetRate;
+                        break;
+
+                    case ConstraintType.GRATE:
+                        xs[indx++] = well.Pwf_n;
+                        xs[indx++] = well.CurrentControl.GasRateTarget;
+                        break;
+
+                    case ConstraintType.ORATE:
+                        xs[indx++] = well.Pwf_n;
+                        xs[indx++] = well.CurrentControl.OilRateTarget;
+                        break;
+
+                    case ConstraintType.WRATE:
+                        xs[indx++] = well.Pwf_n;
+                        xs[indx++] = well.CurrentControl.WaterRateTarget;
+                        break;
+
+                    case ConstraintType.LRATE:
+                        xs[indx++] = well.Pwf_n;
+                        xs[indx++] = well.CurrentControl.LiquidRateTarget;
+                        break;
+
+                    default:
+                        throw new InvalidOperationException($"Unhandled well constraint type: {well.ConstraintType}");
+                }
             }
         }
 
@@ -336,12 +394,14 @@ namespace ReservoirSimulator
             MklPardisoSolver solver = null;
 
             funcall = 0;
-            double Residual(double[] xnp1, double time)
+            double Residual(double[] xnp1, double dt)
             {
-                funcall++;
 
+                //Utility.checkconnectivity(Grids, JacValues.Length);
                 Array.Clear(JacValues, 0, JacValues.Length);
                 Array.Clear(Res, 0, Res.Length);
+                funcall++;
+
 
                 // =========================================================================
                 // 1. HIGH CPU USAGE: Batched Parallel Assembly with Strict Row Ownership
@@ -351,8 +411,8 @@ namespace ReservoirSimulator
                     int start = coreId * chunkSize;
                     int end = (coreId == cores - 1) ? Ngrids : start + chunkSize;
 
-                    for (int m = start; m < end; m++)
                     //for (int m = 0; m < Ngrids; m++)
+                    for (int m = start; m < end; m++)
                     {
                         var mgrid = Grids[m];
 
@@ -370,12 +430,14 @@ namespace ReservoirSimulator
                         var Er_i = mgrid.Er(meanP);
                         var Bo_i = mgrid.Bo(Po_i); 
                         var Bw_i = mgrid.Bw(Pw_i); 
-                        var Kro_i = mgrid.Krow(So_i);
+                        var Kro_i = mgrid.Krow(Sw_i);
                         var Krw_i = mgrid.Krw(Sw_i);
                         var μo_i = mgrid.μo(Po_i);
                         var μw_i = mgrid.μw(Pw_i);
                         var γo_i = mgrid.γo(Po_i);
                         var γw_i = mgrid.γw(Pw_i);
+                        var λo_i = Kro_i / (μo_i * Bo_i);
+                        var λw_i = Krw_i / (μw_i * Bw_i);
 
                         mgrid.Po_np1 = Po_i.Value; mgrid.So_np1 = So_i.Value; mgrid.Bo_np1 = Bo_i.Value;
                         mgrid.Pw_np1 = Pw_i.Value; mgrid.Sw_np1 = Sw_i.Value; mgrid.Bw_np1 = Bw_i.Value;
@@ -420,12 +482,14 @@ namespace ReservoirSimulator
                                 var So_j = 1.0 - Sw_j;
                                 var Bo_j = ngrid.Bo(Po_j);
                                 var Bw_j = ngrid.Bw(Pw_j);
-                                var Kro_j = ngrid.Krow(So_j);
+                                var Kro_j = ngrid.Krow(Sw_j);
                                 var Krw_j = ngrid.Krw(Sw_j);
                                 var μo_j = ngrid.μo(Po_j);
                                 var μw_j = ngrid.μw(Pw_j);
                                 var γo_j = ngrid.γo(Po_j);
                                 var γw_j = ngrid.γw(Pw_j);
+                                var λo_j = Kro_j / (μo_j * Bo_j);
+                                var λw_j = Krw_j / (μw_j * Bw_j);
 
                                 // Hydrostatic potential differences
                                 var γo_avg = 0.5 * (γo_i + γo_j);
@@ -434,12 +498,12 @@ namespace ReservoirSimulator
                                 var DΦw = Pw_i - Pw_j - γw_avg * dz;
 
                                 // Upstream phase mobilities
-                                var lambda_o = DΦo >= 0.0 ? (Kro_i / (μo_i * Bo_i)) : (Kro_j / (μo_j * Bo_j));
-                                var lambda_w = DΦw >= 0.0 ? (Krw_i / (μw_i * Bw_i)) : (Krw_j / (μw_j * Bw_j));
+                                var λo_up = Utility.SmoothUpstream(DΦo, λo_i, λo_j);
+                                var λw_up = Utility.SmoothUpstream(DΦw, λw_i, λw_j);
 
                                 // Outflow flux from cell i to cell j
-                                var FluxOil = transDt * lambda_o * DΦo;
-                                var FluxWater = transDt * lambda_w * DΦw;
+                                var FluxOil = transDt * λo_up * DΦo;
+                                var FluxWater = transDt * λw_up * DΦw;
 
                                 // Direct write to Flux Residual
                                 Res[row_o] += FluxOil.Value;
@@ -671,88 +735,100 @@ namespace ReservoirSimulator
                 return MaxCNV;
             }
 
-            dt = 0.1;
-            // Initialize historical data tracking containers for plotting and reporting
+
+            double t = 0.0, dt = 0.1, dtCarry = 0.1;
             DateTime startDate = DATA.StartDate, currentSimDate;
             List<DateTime> Interval = [startDate, .. ResultTime.Select(time => startDate.AddDays(time))];
             foreach (var well in Wells)
                 Interval.AddRange(well.GetEventTimes());
             Interval = [.. Interval.Distinct().OrderBy(x => x)];
+
             Console.WriteLine($"""
-                    Total Grids = {Ngrids}, 
-                    Active Grids = {NumActiveGrids}
-                    ======================================================================
-                                            Starting simulation
-                    """);
-            double L = 0, tnp1, history_dtmax = 0, rnorm = 0;
-            bool staterejected, isComplete;
-            Time = [0];
+                Total Grids = {Ngrids}, Active Grids = {NumActiveGrids}
+                ======================================================================
+                Starting simulation
+                """);
+
+            double L = 0, tnp1, rnorm = 0;
+            bool staterejected = false, isComplete;
+            int NumActiveWells = 0;
+            Time = [t];
+
             for (int i = 1; i < Interval.Count; i++)
             {
                 L = Interval[i].Subtract(startDate).TotalDays;
-                dt = Min(dt, Abs(L - t));
                 isComplete = false;
+
                 while (!isComplete)
                 {
-                    staterejected = false;
+                    double remaining = L - t;
+                    bool hitMilestone = dtCarry >= remaining - 1e-13;
+                    dt = hitMilestone ? remaining : dtCarry;
+
                     tnp1 = t + dt;
                     currentSimDate = startDate.AddDays(tnp1);
-                    Console.WriteLine($"\n[Info] Simulation Time: {tnp1:F3} days | Current Date: {currentSimDate:yyyy-MM-dd}");
+                    Console.WriteLine($"\n[Info] Simulation Time: {tnp1:F3} days | Current Date: {currentSimDate:yyyy-MM-dd} | dt: {dt:F4} d");
 
-                    // Check for any Well events (e.g., control changes, shut-ins) that occur at the current simulation time
-                    // If any events are detected, update the well constraints accordingly
-                    int NumActiveWells = 0;
-                    foreach (var well in Wells)
+                    if (!staterejected)
                     {
-                        well.UpdateControl(currentSimDate);
-                        if(well.isActive) well.ActiveIndex = NumActiveWells++;
+                        NumActiveWells = 0;
+                        foreach (var well in Wells)
+                        {
+                            well.UpdateControl(currentSimDate);
+                            if (well.isActive) well.ActiveIndex = NumActiveWells++;
+                        }
+
+                        foreach (var well in Wells)
+                            well.UpdateCompletion(currentSimDate);
+
+                        // Rebuild CSR and run PARDISO symbolic factorization ONLY when active wells or completions change
+                        if (Wells.Any(well => well.ActiveStatusChanged) || Wells.Any(well => well.CompletionChanged))
+                        {
+                            Console.WriteLine($"[Info] Number of Active Wells: {NumActiveWells}");
+                            Console.WriteLine($"[Info] Well Completion/Active Status Changed at t = {tnp1:F3} days -> Rebuilding CSR & Symbolic Factorization");
+                            solver?.Dispose(); // <-- CRITICAL: triggers PARDISO phase = -1 to free native L/U buffers!
+                            solver = null;
+                            (totalDofs, col_index, row_ptr, JacValues) = ReservoirJacobian.Create(2, Grids, Wells);
+                            (cellOffsets, faceOffsets, wellOffsets) = ReservoirJacobian.PrecomputeOffsets(2, row_ptr, col_index, Grids, Wells);
+                            solver = new MklPardisoSolver(totalDofs, row_ptr, col_index);
+                            xs = new double[totalDofs];
+                            Res = new double[totalDofs];
+                            dx = new double[totalDofs];
+                        }
                     }
 
-                    // Check for changes in Well Completion Status (e.g., new completions, shut-ins) that may affect the simulation
-                    // if there are any changes, update the well completions and related properties
-                    foreach (var well in Wells) well.UpdateCompletion(currentSimDate);
+                    // Prepare initial guess x^(0) from converged state n
+                    InitialGuess(xs, dt);
+                    staterejected = false;
 
-                    // Check for any changes in Well Constraints (e.g., BHP limits, rate limits) that may affect the simulation
-                    if (Wells.Any(well => well.ActiveStatusChanged) || Wells.Any(well=> well.CompletionChanged))
-                    {
-                        Console.WriteLine($"[Info] Number of Active Wells {NumActiveWells}");
-                        Console.WriteLine($"[Info] Well Completion Status Changed at t = {tnp1:F3} days for some Wells");
-                        Console.WriteLine($"New Jacobian Nonzero index and Symbolic factorization");
-                        (totalDofs, col_index, row_ptr, JacValues) = ReservoirJacobian.Create(2, Grids, Wells);
-                        (cellOffsets, faceOffsets, wellOffsets) = ReservoirJacobian.PrecomputeOffsets(2, row_ptr, col_index, Grids, Wells);
-                        solver = new MklPardisoSolver(totalDofs, row_ptr, col_index);
-                        xs = new double[totalDofs]; Res = new double[totalDofs]; dx = new double[totalDofs];
-                    }
-
-                    // Prepare the initial guess for the Newton-Raphson solver based on the previous time step solution
-                    
-                    InitialGuess(xs);
-
-                    // Call the Newton-Raphson nonlinear solver to
-                    // find the next state solution
                     Console.WriteLine($"""
+                        Time: {tnp1:E4} days
+                         iter |   Residual Norm
+                        ------+------------------
+                        """);
 
+                    int iter;
+                    bool isConverged = false;
+                    rnorm = Residual(xs, dt);
+                    double prevRnorm = rnorm;
 
-
-                    Time: 
-                    {tnp1:E4} days
-                        iter  |   Residual Norm  
-                    ----------+------------------
-                    """);
-                    int iter; bool isConverged = false;
-                    rnorm = Residual(xs, tnp1);
-                    // Solve the nonlinear system using Newton-Raphson method
-                    for (iter = 1; iter < 7; iter++)
+                    for (iter = 1; iter < 10; iter++)
                     {
-                        // 2. Direct solve: J * dx = Res
+                        // Direct solve via MKL PARDISO: J * dx = Res
                         solver.Solve(JacValues, Res, dx);
 
-                        // 3. Update primary variables in field units: x^{k+1} = x^k - dx
+                        // Update primary variables: x^{k+1} = x^k - dx
                         (double maxDPo, double maxDSw) = ApplyPrimaryVariableUpdate(xs, dx, NumActiveGrids, NumActiveWells);
-                        rnorm = Residual(xs, tnp1);
+                        rnorm = Residual(xs, dt);
 
-                        Console.WriteLine($"  {iter,4}    |    {rnorm:E4}");
-                        // 4. Converged only when BOTH normalized residual AND state step are small
+                        Console.WriteLine($"  {iter,2}  |  {rnorm:E4}");
+
+                        // Early exit if Newton diverges or hits NaN
+                        if (double.IsNaN(rnorm) || (iter > 2 && rnorm > 10.0 * prevRnorm))
+                            break;
+                        prevRnorm = rnorm;
+
+                        // Converged when normalized residual AND state step are both within tolerance
                         if (rnorm < 1e-6 && maxDSw < 1e-4 && maxDPo < 1e-2)
                         {
                             isConverged = true;
@@ -760,83 +836,79 @@ namespace ReservoirSimulator
                         }
                     }
 
-                    // Check convergence. If non-converged,
-                    // chop the time step (time-step cuts) and retry.
+                    // Cut dt on Newton non-convergence
                     if (!isConverged)
                     {
-                        dt = 0.1*dt;
+                        dtCarry = 0.5 * dt;
+                        if (dtCarry < 1e-12) throw new Exception("Time step is too small");
+                        staterejected = true;
                         Console.WriteLine("""
-                                ============================
-                                 Rejected (Non-Convergence)
-                                ============================
-                                """);
+                            ============================
+                            Rejected (Non-Convergence)
+                            ============================
+                            """);
                         continue;
                     }
 
-                    // Unpack solution values to evaluate operational constraint validations
+                    // Validate maximum per-step state changes
                     var (maxDP, maxDS, i_p, i_s) = CheckSolution(xs);
-                    if (maxDP > 400 || maxDS > 0.15)
+                    if (maxDP > 100 || maxDS > 0.15)
                     {
-                        int j = maxDP > 400 ? i_p : i_s;
-                        double limit = maxDP > 400 ? 400 : 0.15;
-                        double change = maxDP > 400 ? maxDP : maxDS;
+                        int j = maxDP > 100 ? i_p : i_s;
+                        double limit = maxDP > 100 ? 100 : 0.15;
+                        double change = maxDP > 100 ? maxDP : maxDS;
                         Console.ForegroundColor = ConsoleColor.Yellow;
                         Console.WriteLine($"\n[Warning] Time Step Rejected: State Change Limit Exceeded.");
                         Console.ResetColor();
                         Console.WriteLine($"    ↳ Location       : Cell Index {j}");
-                        Console.WriteLine($"    ↳ Violation      : {(maxDP > 400 ? "ΔP" : "ΔS")} = {change:F4} (Max Allowed: {limit:F4})");
+                        Console.WriteLine($"    ↳ Violation      : {(maxDP > 100 ? "ΔP" : "ΔS")} = {change:F4} (Max Allowed: {limit:F4})");
                         Console.WriteLine($"    ↳ Current State  : P = {Grids[j].Po_n:F1} psi | Sw = {Grids[j].Sw_n:F4}");
                         Console.WriteLine($"    ↳ Attempted State: P = {Grids[j].Po_np1:F1} psi | Sw = {Grids[j].Sw_np1:F4}");
                         Console.WriteLine($"    ↳ Solver Action  : Rolling back to t = {t:F3} days.");
-                        Console.WriteLine($"    ↳ Time-Step Chop : Reducing Δt from {dt:F2} to {0.5*dt:F2} days (Factor: 0.5).\n");
-                        dt = 0.5*dt;
+                        Console.WriteLine($"    ↳ Time-Step Chop : Reducing Δt from {dt:F2} to {0.5 * dt:F2} days (Factor: 0.5).\n");
+                        dtCarry = 0.5 * dt;
+                        staterejected = true;
                         continue;
                     }
 
-                    // Track the maximum time step that still yields convergence for potential future use in adaptive time-stepping
-                    history_dtmax = Max(dt, history_dtmax);
-                    foreach(var well in Wells)
+                    // Validate Well BHP constraints (reuses existing PARDISO factorization on constraint switch)
+                    foreach (var well in Wells)
                     {
                         if (!well.isActive) continue;
-                        // Validate Producer constraints:
-                        if (well.WellType == WellType.PRODUCER)
+
+                        if (well.WellType == WellType.PRODUCER &&
+                            well.ConstraintType != ConstraintType.MIN_BHP &&
+                            well.Pwf < well.CurrentControl.MinBhpLimit)
                         {
-                            // switch to BHP control if pressure falls below minimum limits
-                            if (well.ConstraintType != ConstraintType.MIN_BHP && well.Pwf < well.CurrentControl.MinBhpLimit)
-                            {
-                                well.ConstraintType = ConstraintType.MIN_BHP;
-                                Console.WriteLine($"""
+                            well.ConstraintType = ConstraintType.MIN_BHP;
+                            Console.WriteLine($"""
                                 ===============================================================
-                                      Rejected (Minimum Pressure Violated) @ {well.Name}
+                                Rejected (Minimum Pressure Violated) @ {well.Name}
                                 ===============================================================
                                 """);
-                                staterejected = true;
-                            }
+                            staterejected = true;
                         }
 
-                        // Validate Injector constraints:
-                        if (well.WellType == WellType.INJECTOR)
+                        if (well.WellType == WellType.INJECTOR &&
+                            well.ConstraintType != ConstraintType.MAX_BHP &&
+                            well.Pwf > well.CurrentControl.MaxBhpLimit)
                         {
-                            // switch to BHP control if pressure exceeds fracturing limits
-                            if (well.ConstraintType != ConstraintType.MAX_BHP && well.Pwf > well.CurrentControl.MaxBhpLimit)
-                            {
-                                well.ConstraintType = ConstraintType.MAX_BHP;
-                                Console.WriteLine("""
+                            well.ConstraintType = ConstraintType.MAX_BHP;
+                            Console.WriteLine($"""
                                 ================================================
-                                      Rejected (Maximum Pressure Violated) 
+                                Rejected (Maximum Pressure Violated) @ {well.Name}
                                 ================================================
                                 """);
-                                staterejected = true;
-                            }
+                            staterejected = true;
                         }
                     }
                     if (staterejected) continue;
-                    
 
-                    // Log verified parameters to performance history arrays
-                    Time.Add(t = tnp1); 
-                    foreach(var grid in Grids)
-                    { 
+                    // Commit verified state n+1 -> n
+                    t = tnp1;
+                    Time.Add(t);
+                    foreach (var grid in Grids)
+                    {
                         if (!grid.isActive) continue;
                         grid.ErSo_Bo_n = grid.ErSo_Bo_np1.Value;
                         grid.ErSw_Bw_n = grid.ErSw_Bw_np1.Value;
@@ -844,7 +916,7 @@ namespace ReservoirSimulator
                         grid.Pw_n = grid.Pw_np1; grid.So_n = grid.So_np1;
                         grid.SaveResult(po: grid.Po_n, pw: grid.Pw_n, so: grid.So_n, sw: grid.Sw_n);
                     }
-                    foreach(var well in Wells)
+                    foreach (var well in Wells)
                     {
                         if (!well.isActive) continue;
                         well.Pwf_n = well.Pwf.Value;
@@ -853,371 +925,16 @@ namespace ReservoirSimulator
                         well.SaveResult(pwf: well.Pwf_n, qo: well.Qo_n, qw: well.Qw_n);
                     }
 
-
                     isComplete = Abs(t - L) < 1e-13;
-                    // Adaptive Time-Stepping Logic:
-                    // scale dt up if convergence is fast, scale down if slow
-                    if (iter < 3) dt = 1.25*dt;
-                    if (iter > 5) dt = 0.5*dt;
-                    if (dt < 1e-12) throw new Exception("time step is too small");
 
-                    // Prevent Overshoot
-                    if (!isComplete) dt = Min(dt, L - t);
-                    dt = Min(dt, 100);
+                    // Adaptive time-stepping update preserving pre-clamped dtCarry across milestones
+                    double nextDt = dt;
+                    if (iter < 3) nextDt *= 1.25;
+                    if (iter > 7) nextDt *= 0.7;
+
+                    dtCarry = hitMilestone ? Clamp(Max(dtCarry, nextDt), 1e-12, 100.0) : Clamp(nextDt, 1e-12, 100.0);
                 }
-                if (history_dtmax > 0) dt = 0.1*history_dtmax;
             }
         }
-
-        private double[] xCoords, yCoords, zCoords;
-        public void ExportParaViewVTR(string folderPath)
-        {
-            xCoords = CalculateCoordinates([.. Enumerable.Range(0, Nx).Select(i => Dx[i])]);
-            yCoords = CalculateCoordinates([.. Enumerable.Range(0, Ny).Select(i => Dy[i*Nx])]);
-            zCoords = CalculateCoordinates([.. Enumerable.Range(0, Nz).Select(i => Dz[i*Nx*Ny])]);
-            ExportSimulation(folderPath, "Test1", Nx, Ny, Nz,
-                xCoords, yCoords, zCoords, Time, P, S);
-        }
-
-        /// <summary>
-        /// Exports a single-block simulation time-series tracking Saturation at node corners.
-        /// Perfectly mirrors ParaView's native parallel XML layout (PVD + PVTR + VTR).
-        /// </summary>
-        public static void ExportSimulation(
-                string outputDirectory,
-                string caseName,
-                int Nx, int Ny, int Nz,
-                double[] xCoord,        // Length: Nx + 1 (Nodes)
-                double[] yCoord,        // Length: Ny + 1 (Nodes)
-                double[] zCoord,        // Length: Nz + 1 (Nodes)
-                List<double> Time,      // Length: Total timesteps
-                List<double[]> P,       // List of flat cell-centered arrays (length: Nx * Ny * Nz)
-                List<double[]> S)       // List of flat cell-centered arrays (length: Nx * Ny * Nz)
-        {
-            Directory.CreateDirectory(outputDirectory);
-            DirectoryInfo directory = new DirectoryInfo(outputDirectory);
-            foreach (FileInfo file in directory.EnumerateFiles())
-                file.Delete();
-
-            string fFormat = "G17"; // High-precision float string format
-            var pvdSb = new StringBuilder();
-
-            // 1. GENERATE THE TIMELINE COLLECTION MASTER (.pvd)
-            pvdSb.AppendLine("<?xml version=\"1.0\"?>");
-            pvdSb.AppendLine("<VTKFile type=\"Collection\" version=\"0.1\" byte_order=\"LittleEndian\">");
-            pvdSb.AppendLine("  <Collection>");
-
-            int Nt = (int)(Time.Last()/20);
-            double delt = Time.Last()/Nt;
-            for (int framenum = 0; framenum <= 1000; framenum++)
-            {
-                double t = framenum*delt;
-                double currentTime = t;
-                double[] cellS = [];
-                double[] cellP = [];
-
-                // Unique filename for each timestep's grid data in the same directory
-                string vtrFileName = $"{caseName}Time{framenum}.vtr";
-
-                // PVD now links directly to the standalone VTR file
-                pvdSb.AppendLine($"    <DataSet timestep=\"{currentTime.ToString(fFormat)}\" group=\"\" part=\"0\" file=\"{vtrFileName}\"/>");
-
-                // -----------------------------------------------------------------
-                // 2. GENERATE THE DYNAMIC DATA SNAPSHOT (.vtr)
-                // -----------------------------------------------------------------
-                var vtrSb = new StringBuilder();
-                vtrSb.AppendLine("<VTKFile type=\"RectilinearGrid\" version=\"1.0\" byte_order=\"LittleEndian\" header_type=\"UInt64\">");
-                vtrSb.AppendLine($"  <RectilinearGrid WholeExtent=\"0 {Nx} 0 {Ny} 0 {Nz}\">");
-
-                // Optional time value metadata
-                vtrSb.AppendLine("    <FieldData>");
-                vtrSb.AppendLine($"      <DataArray type=\"Float64\" Name=\"TimeValue\" NumberOfTuples=\"1\" format=\"ascii\">");
-                vtrSb.AppendLine($"        {currentTime.ToString(fFormat)}");
-                vtrSb.AppendLine("      </DataArray>");
-                vtrSb.AppendLine("    </FieldData>");
-
-                vtrSb.AppendLine($"    <Piece Extent=\"0 {Nx} 0 {Ny} 0 {Nz}\">");
-
-                // CellData Block maps simulation variables directly to the centers of your grid blocks
-                vtrSb.AppendLine("    <CellData Scalars=\"Saturation,Pressure\">");
-
-                // Saturation Array
-                vtrSb.AppendLine($"      <DataArray type=\"Float64\" Name=\"Saturation\" format=\"ascii\" RangeMin=\"{cellS.Min()}\" RangeMax=\"{cellS.Max()}\">");
-                vtrSb.Append("        ");
-                int cellIndx = 0;
-                for (int k = 0; k < Nz; k++)
-                {
-                    for (int j = 0; j < Ny; j++)
-                    {
-                        for (int i = 0; i < Nx; i++)
-                        {
-                            vtrSb.Append(cellS[cellIndx++].ToString(fFormat) + " ");
-                        }
-                        vtrSb.Append("\n        ");
-                    }
-                    vtrSb.Append("\n\n        ");
-                }
-                vtrSb.AppendLine("\n      </DataArray>\n");
-
-                // Pressure Array
-                vtrSb.AppendLine($"      <DataArray type=\"Float64\" Name=\"Pressure\" format=\"ascii\" RangeMin=\"{cellP.Min()}\" RangeMax=\"{cellP.Max()}\">");
-                vtrSb.Append("        ");
-                cellIndx = 0;
-                for (int k = 0; k < Nz; k++)
-                {
-                    for (int j = 0; j < Ny; j++)
-                    {
-                        for (int i = 0; i < Nx; i++)
-                        {
-                            vtrSb.Append(cellP[cellIndx++].ToString(fFormat) + " ");
-                        }
-                        vtrSb.Append("\n        ");
-                    }
-                    vtrSb.Append("\n\n        ");
-                }
-                vtrSb.AppendLine("\n      </DataArray>");
-                vtrSb.AppendLine("    </CellData>");
-
-                // Coordinates Block defines the physical bounding nodes of your grid blocks
-                vtrSb.AppendLine("    <Coordinates>");
-
-                vtrSb.AppendLine($"      <DataArray type=\"Float64\" Name=\"X\" format=\"ascii\" RangeMin=\"{xCoord.Min()}\" RangeMax=\"{xCoord.Max()}\">");
-                vtrSb.Append("        ");
-                for (int i = 0; i <= Nx; i++) vtrSb.Append(xCoord[i].ToString(fFormat) + " ");
-                vtrSb.AppendLine("\n      </DataArray>");
-
-                vtrSb.AppendLine($"      <DataArray type=\"Float64\" Name=\"Y\" format=\"ascii\" RangeMin=\"{yCoord.Min()}\" RangeMax=\"{yCoord.Max()}\">");
-                vtrSb.Append("        ");
-                for (int j = 0; j <= Ny; j++) vtrSb.Append(yCoord[j].ToString(fFormat) + " ");
-                vtrSb.AppendLine("\n      </DataArray>");
-
-                vtrSb.AppendLine($"      <DataArray type=\"Float64\" Name=\"Z\" format=\"ascii\" RangeMin=\"{zCoord.Min()}\" RangeMax=\"{zCoord.Max()}\">");
-                vtrSb.Append("        ");
-                for (int k = 0; k <= Nz; k++) vtrSb.Append(zCoord[k].ToString(fFormat) + " ");
-                vtrSb.AppendLine("\n      </DataArray>");
-
-                vtrSb.AppendLine("    </Coordinates>");
-
-                vtrSb.AppendLine("    </Piece>");
-                vtrSb.AppendLine("  </RectilinearGrid>");
-                vtrSb.AppendLine("</VTKFile>");
-
-                File.WriteAllText(Path.Combine(outputDirectory, vtrFileName), vtrSb.ToString());
-            }
-
-            pvdSb.AppendLine("  </Collection>");
-            pvdSb.AppendLine("</VTKFile>");
-            File.WriteAllText(Path.Combine(outputDirectory, $"{caseName}.pvd"), pvdSb.ToString());
-        }
-
-        public void ExportWells(string outputDirectory)
-        {
-            Directory.CreateDirectory(outputDirectory);
-            foreach (var well in Wells)
-            {
-                double[][] Trajectory = well.GetTrajectoryCoordinates(Grids);
-                ExportWellAsVtk(Path.Combine(outputDirectory, $"{well.Name}.vtk"), well.Name, Trajectory);
-            }
-        }
-
-        /// <summary>
-        /// Computes cumulative edge locations from cell delta sizes.
-        /// Length of returning array is cell count + 1.
-        /// </summary>
-        private double[] CalculateCoordinates(double[] deltas)
-        {
-            double[] coords = new double[deltas.Length + 1];
-            coords[0] = 0.0;
-            for (int i = 0; i < deltas.Length; i++)
-            {
-                coords[i + 1] = coords[i] + deltas[i];
-            }
-            return coords;
-        }
-
-        public void ExportWellAsVtk(string outputPath, string wellName, double[][] trajectories)
-        {
-            // trajectories array expected shape: [numPoints][3] -> X, Y, Z coordinates
-            int numPoints = trajectories.Length;
-
-            using StreamWriter writer = new(outputPath, false, Encoding.ASCII);
-
-            // 1. Write standard VTK Polydata Header
-            writer.WriteLine("# vtk DataFile Version 3.0");
-            writer.WriteLine($"Well Path: {wellName}");
-            writer.WriteLine("ASCII");
-            writer.WriteLine("DATASET POLYDATA");
-
-            // 2. Write Geometry Nodes (Points)
-            writer.WriteLine($"POINTS {numPoints} double");
-            for (int i = 0; i < numPoints; i++)
-            {
-                writer.WriteLine($"{trajectories[i][0]:F2} {trajectories[i][1]:F2} {trajectories[i][2]:F2}");
-            }
-            writer.WriteLine();
-
-            // 3. Topology: Link the points into a single continuous wireframe string
-            // Format: LINES [NumberOfLines] [TotalIntegerCountInBlock]
-            // Total count = NumberOfLines + total number of indices mapped
-            writer.WriteLine($"LINES 1 {numPoints + 1}");
-            writer.Write($"{numPoints} ");
-            for (int i = 0; i < numPoints; i++)
-            {
-                writer.Write($"{i} ");
-            }
-            writer.WriteLine();
-            writer.WriteLine();
-
-            // 4. Optional Metadata Attributions (Coloring / Labeling in ParaView)
-            writer.WriteLine($"CELL_DATA 1");
-            writer.WriteLine("FIELD FieldData 1");
-            writer.WriteLine($"WellID 1 {wellName.Length} string");
-            writer.WriteLine(wellName);
-        }
-
-
-        // 1. Generates the individual active mesh snapshot for a specific time step
-        public void ExportStepToVtu(
-            string directoryPath, string baseName, int stepIndex,
-            int nx, int ny, int nz, double[] dx, double[] dy, double[] dz, double[] zTop,
-            int[] Actnum, double[] pressure, double[] saturation)
-        {
-            // Build the specific filename for this step (e.g., RunTest1_0.vtu)
-            string fileName = $"{baseName}_{stepIndex}.vtu";
-            string fullPath = Path.Combine(directoryPath, fileName);
-
-            // 2. Compute explicit structural coordinates for vertices
-            // A regular mesh has (nx+1)*(ny+1)*(nz+1) absolute grid vertex coordinates
-            double[] xCoords = new double[nx + 1], yCoords = new double[ny + 1];
-
-            for (int i = 1; i <= nx; i++) xCoords[i] = xCoords[i - 1] + dx[i - 1];
-            for (int j = 1; j <= ny; j++) yCoords[j] = yCoords[j - 1] + dy[j - 1];
-
-            StringBuilder xmlPoints = new(), xmlConnectivity = new(), xmlOffsets = new();
-            StringBuilder xmlTypes = new(), xmlPressure = new(), xmlSaturation = new();
-
-            int pointOffset = 0;
-            int Ngrids = pressure.Length;
-            int numActiveCells = Actnum.Where(a => a > 0).Count();
-            int numPoints = numActiveCells*8; 
-            for (int m = 0; m < Ngrids; m++)
-            {
-                if (Actnum[m] == 0) continue;
-                var grid = Grids[m];
-
-                for (int c = 0; c < 8; c++)
-                    xmlPoints.AppendLine($"{grid.Corners[c].X} {grid.Corners[c].Y} {grid.Corners[c].Z}");     
-
-                // Hexahedron connectivity mapping string index pointers
-                xmlConnectivity.AppendLine($"{pointOffset} {pointOffset+1} {pointOffset+2} {pointOffset+3} {pointOffset+4} {pointOffset+5} {pointOffset+6} {pointOffset+7}");
-
-                pointOffset += 8;
-                xmlOffsets.AppendLine($"{pointOffset}");
-                xmlTypes.AppendLine("12"); // VTK_HEXAHEDRON structural code identifier
-
-                // Map data properties directly using the corresponding active global identifier
-                xmlPressure.Append($"{pressure[m]} ");
-                xmlSaturation.Append($"{saturation[m]} ");
-            }
-
-            // 3. Assemble complete XML output file buffer
-            StringBuilder vtuFile = new();
-            vtuFile.AppendLine("<?xml version=\"1.0\"?>");
-            vtuFile.AppendLine("<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" byte_order=\"LittleEndian\">");
-            vtuFile.AppendLine($"  <UnstructuredGrid>");
-            vtuFile.AppendLine($"    <Piece NumberOfPoints=\"{numPoints}\" NumberOfCells=\"{numActiveCells}\">");
-
-            // Point Data Section
-            vtuFile.AppendLine("      <Points>");
-            vtuFile.AppendLine("        <DataArray type=\"Float64\" NumberOfComponents=\"3\" format=\"ascii\">");
-            vtuFile.Append(xmlPoints.ToString());
-            vtuFile.AppendLine("        </DataArray>");
-            vtuFile.AppendLine("      </Points>");
-
-            // Cell Connectivity Specification Section
-            vtuFile.AppendLine("      <Cells>");
-            vtuFile.AppendLine("        <DataArray type=\"Int32\" Name=\"connectivity\" format=\"ascii\">");
-            vtuFile.Append(xmlConnectivity.ToString());
-            vtuFile.AppendLine("        </DataArray>");
-            vtuFile.AppendLine("        <DataArray type=\"Int32\" Name=\"offsets\" format=\"ascii\">");
-            vtuFile.Append(xmlOffsets.ToString());
-            vtuFile.AppendLine("        </DataArray>");
-            vtuFile.AppendLine("        <DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">");
-            vtuFile.Append(xmlTypes.ToString());
-            vtuFile.AppendLine("        </DataArray>");
-            vtuFile.AppendLine("      </Cells>");
-
-            // Simulation Physical Property Field Section
-            vtuFile.AppendLine("      <CellData Scalars=\"Pressure\">");
-            vtuFile.AppendLine("        <DataArray type=\"Float64\" Name=\"Pressure\" format=\"ascii\">");
-            vtuFile.AppendLine(xmlPressure.ToString());
-            vtuFile.AppendLine("        </DataArray>");
-            vtuFile.AppendLine("        <DataArray type=\"Float64\" Name=\"Water_Saturation\" format=\"ascii\">");
-            vtuFile.AppendLine(xmlSaturation.ToString());
-            vtuFile.AppendLine("        </DataArray>");
-            vtuFile.AppendLine("      </CellData>");
-
-            vtuFile.AppendLine("    </Piece>");
-            vtuFile.AppendLine("  </UnstructuredGrid>");
-            vtuFile.AppendLine("</VTKFile>");
-
-            File.WriteAllText(fullPath, vtuFile.ToString());
-        }
-
-        // 2. Generates the master pointer file that ParaView opens
-        public void ExportParaViewVTU(string outputDirectory)
-        {
-            Directory.CreateDirectory(outputDirectory);
-            DirectoryInfo directory = new DirectoryInfo(outputDirectory);
-            foreach (FileInfo file in directory.EnumerateFiles())
-                file.Delete();
-
-            string baseName = "Test1";
-            StringBuilder pvd = new();
-            pvd.AppendLine("<?xml version=\"1.0\"?>");
-            pvd.AppendLine("<VTKFile type=\"Collection\" version=\"0.1\" byte_order=\"LittleEndian\">");
-            pvd.AppendLine("  <Collection>");
-
-            
-            int Nt = (int)(Time.Last()/20);
-            double delt = Time.Last()/Nt;
-            for (int framenum = 0; framenum <= Nt; framenum++)
-            {
-                double t = framenum*delt;
-                double currentTime = t;
-                double[] cellS = [];
-                double[] cellP = [];
-                ExportStepToVtu(outputDirectory, baseName, framenum, Nx, Ny, Nz, Dx, Dy, Dz, zTop, Actnum, cellP, cellS);
-                // Direct reference matching your exact naming convention
-                string vtuFileName = $"{baseName}_{framenum}.vtu";
-                pvd.AppendLine($"    <DataSet timestep=\"{currentTime}\" group=\"\" part=\"0\" file=\"{vtuFileName}\"/>");
-            }
-
-            pvd.AppendLine("  </Collection>");
-            pvd.AppendLine("</VTKFile>");
-
-            string pvdPath = Path.Combine(outputDirectory, $"{baseName}.pvd");
-            File.WriteAllText(pvdPath, pvd.ToString());
-        }
-
-        public static double GetZcornValue(double[] zcorn, int nx, int ny, int nz,
-                                   int i, int j, int k, int corner)
-        {
-            // Deconstruct the 0-7 corner index into local binary offsets
-            int localX = (corner == 1 || corner == 3 || corner == 5 || corner == 6) ? 1 : 0;
-            int localY = (corner == 2 || corner == 3 || corner == 6 || corner == 7) ? 1 : 0;
-            int localZ = (corner >= 4) ? 1 : 0;
-
-            // Standard ECLIPSE/OPM flat array offset formula
-            int index = (k * 2 * ny * 2 * nx) +
-                        (localZ * ny * 2 * nx) +
-                        (j * 2 * nx) +
-                        (localY * nx * 2) +
-                        (i * 2) +
-                        localX;
-
-            return zcorn[index];
-        }
-
     }
 }

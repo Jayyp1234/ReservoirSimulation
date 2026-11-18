@@ -19,7 +19,6 @@ namespace ReservoirSimulator
         public double ZControl { get; set; }
         public int I { get; }
         public int J { get; }
-
         public int Nx { get; set; }
         public int Ny { get; set; }
         public int Nz { get; set; }
