@@ -259,6 +259,27 @@ namespace EclipseDeckReader
                             ParseMultfltSection(tokens, ref i, deck.Faults);
                             break;
 
+                        case "RSVD":
+                            deck.RawRsvdTables.AddRange(ParseRowStructuredRegions(tokens, ref i, columnsPerRow: 2));
+                            Console.WriteLine($"      [Data] RSVD: Loaded {deck.RawRsvdTables.Count} region table(s).");
+                            break;
+
+                        case "FLUXNUM":
+                            var fluxData = KeywordExtractor.ExtractIntArray(tokens, ref i);
+                            deck.FluxnumArray = fluxData; // Keep 1-based to match MULTREGT region IDs (1..20)
+                            Console.WriteLine($"      [Data] FLUXNUM: Loaded {deck.FluxnumArray.Count} entries.");
+                            break;
+
+                        case "MULTNUM":
+                            var multData = KeywordExtractor.ExtractIntArray(tokens, ref i);
+                            deck.MultnumArray = multData;
+                            Console.WriteLine($"      [Data] MULTNUM: Loaded {deck.MultnumArray.Count} entries.");
+                            break;
+
+                        case "MULTREGT":
+                            ParseMultregtSection(tokens, ref i, deck.MultregtRecords);
+                            break;
+
                         case "INCLUDE":
                             HandleIncludeKeyword(tokens, ref i, currentFilePath, deck);
                             break;
@@ -545,51 +566,90 @@ namespace EclipseDeckReader
                 };
             }
         }
+        private static IEnumerable<WellData> ResolveMatchingWells(EclipseDataDeck deck, string wellNamePattern, bool createIfMissing = true)
+        {
+            if (wellNamePattern.EndsWith('*'))
+            {
+                string prefix = wellNamePattern.TrimEnd('*');
+                var matches = deck.Wells
+                    .Where(kvp => kvp.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    .Select(kvp => kvp.Value)
+                    .ToList();
+
+                if (matches.Count > 0)
+                    return matches;
+            }
+
+            if (!deck.Wells.TryGetValue(wellNamePattern, out var wellData))
+            {
+                if (!createIfMissing) return [];
+                wellData = new WellData();
+                deck.Wells[wellNamePattern] = wellData;
+            }
+
+            return [wellData];
+        }
+
         private void ParseCompdatBlock(List<Token> tokens, ref int index, EclipseDataDeck deck)
         {
             while (index < tokens.Count)
             {
                 ClearLeadingLayoutSpacers(tokens, ref index);
-                if (index >= tokens.Count || tokens[index].Type == TokenType.Slash) { if (index < tokens.Count) index++; break; }
-
-                string wellName = tokens[index].Content.ToString().Trim('\'').Trim('"');
-                int.TryParse(tokens[index + 1].Content.ToString(), out int iRaw);
-                int.TryParse(tokens[index + 2].Content.ToString(), out int jRaw);
-                int.TryParse(tokens[index + 3].Content.ToString(), out int kStart);
-                int.TryParse(tokens[index + 4].Content.ToString(), out int kEnd);
-                string status = tokens[index + 5].Content.ToString().ToUpper();
-
-                double.TryParse(tokens[index + 7].Content.ToString(), System.Globalization.CultureInfo.InvariantCulture, out double dia);
-                double.TryParse(tokens[index + 9].Content.ToString(), System.Globalization.CultureInfo.InvariantCulture, out double skin);
-
-                index += 10;
-                AdvanceAndClearTrailingJunk(tokens, ref index);
-
-                if (deck.Wells.TryGetValue(wellName, out var wellData))
+                if (index >= tokens.Count) break;
+                if (tokens[index].Type == TokenType.Slash || tokens[index].Content.ToString() == "/")
                 {
-                    // Convert 1-based ECLIPSE block locations to 0-based internal matrix indexing
+                    index++;
+                    break;
+                }
+                if (tokens[index].Type == TokenType.Keyword) break;
+
+                List<string> record = ReadRecordTokensUntilSlash(tokens, ref index);
+                if (record.Count < 5) continue;
+
+                string wellPattern = record[0];
+
+                foreach (var wellData in ResolveMatchingWells(deck, wellPattern))
+                {
+                    // Default I and J (1* or <= 0) to WELSPECS HeadI / HeadJ
+                    int iRaw = (record[1] == "1*" || !int.TryParse(record[1], out int parsedI) || parsedI <= 0)
+                        ? wellData.Specification.HeadI
+                        : parsedI;
+
+                    int jRaw = (record[2] == "1*" || !int.TryParse(record[2], out int parsedJ) || parsedJ <= 0)
+                        ? wellData.Specification.HeadJ
+                        : parsedJ;
+
+                    int.TryParse(record[3], out int kStart);
+                    int.TryParse(record[4], out int kEnd);
+
+                    string status = record.Count > 5 && record[5] != "1*" ? record[5].ToUpper() : "OPEN";
+                    // record[6] = saturation table number
+                    double transFactor = ParseOptionalDouble(record, 7, fallback: 0.0);
+                    double dia = ParseOptionalDouble(record, 8, fallback: 0.5);
+                    // record[9] = Kh
+                    double skin = ParseOptionalDouble(record, 10, fallback: 0.0);
+
                     int iZeroBased = iRaw - 1;
                     int jZeroBased = jRaw - 1;
 
-                    // Expand multi-layer completions cell-by-cell into the timeline record history array
                     for (int k = kStart; k <= kEnd; k++)
                     {
                         wellData.CompletionHistory.Add(new WellCompletionRecord
                         {
-                            EffectiveDate = deck.CurrentSimDate, // Stamped timeline tracking
+                            EffectiveDate = deck.CurrentSimDate,
                             I = iZeroBased,
                             J = jZeroBased,
                             KStart = k,
                             KEnd = k,
                             Status = status,
                             WellBoreDiameter = dia,
-                            EffectiveSkin = skin
+                            EffectiveSkin = skin,
+                            TransmissibilityFactor = transFactor
                         });
                     }
                 }
             }
         }
-    
         private static void ClearLeadingLayoutSpacers(List<Token> tokens, ref int index)
         {
             while (index < tokens.Count &&
@@ -886,17 +946,19 @@ namespace EclipseDeckReader
                         // Ensure it's correctly allocated if it was completely empty prior to this EQUALS run
                         if (targetArray.Count == 0) InitializeUniformArray(targetArray, totalCells, 1.0);
 
-                        int modificationCount = 0;
+                        int modificationCount = 0; int flatk, flatj, flati;
                         for (int k = kStart; k <= kEnd; k++)
                         {
+                            flatk = k - 1;
                             for (int j = jStart; j <= jEnd; j++)
                             {
+                                flatj = flatk * deck.NY + (j - 1); 
                                 for (int i = iStart; i <= iEnd; i++)
                                 {
-                                    int flatIndex = (k - 1) * deck.NX * deck.NY + (j - 1) * deck.NX + (i - 1);
-                                    if (flatIndex >= 0 && flatIndex < totalCells)
+                                    flati = flatj * deck.NX + (i - 1);
+                                    if (flati >= 0 && flati < totalCells)
                                     {
-                                        targetArray[flatIndex] = value;
+                                        targetArray[flati] = value;
                                         modificationCount++;
                                     }
                                 }
@@ -933,6 +995,16 @@ namespace EclipseDeckReader
                             if (deck.EquinumArray.Count == 0) InitializeUniformArray(deck.EquinumArray, totalCells, 0); // Default to index 0
                             // Convert user input value (1-based) to 0-based internal storage
                             ApplyIntEqualsOverride(deck.EquinumArray, adjustedValue - 1, iStart, iEnd, jStart, jEnd, kStart, kEnd, deck.NX, deck.NY, totalCells, targetProp);
+                            break;
+
+                        case "FLUXNUM":
+                            if (deck.FluxnumArray.Count == 0) InitializeUniformArray(deck.FluxnumArray, totalCells, 1);
+                            ApplyIntEqualsOverride(deck.FluxnumArray, adjustedValue, iStart, iEnd, jStart, jEnd, kStart, kEnd, deck.NX, deck.NY, totalCells, targetProp);
+                            break;
+
+                        case "MULTNUM":
+                            if (deck.MultnumArray.Count == 0) InitializeUniformArray(deck.MultnumArray, totalCells, 1);
+                            ApplyIntEqualsOverride(deck.MultnumArray, adjustedValue, iStart, iEnd, jStart, jEnd, kStart, kEnd, deck.NX, deck.NY, totalCells, targetProp);
                             break;
                     }
                 }
@@ -1123,7 +1195,7 @@ namespace EclipseDeckReader
             if (val == "1*" || string.IsNullOrWhiteSpace(val)) return fallback;
             return double.TryParse(val, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double parsed) ? parsed : fallback;
         }
-
+        
         private void ParseWconprodBlock(List<Token> tokens, ref int index, EclipseDataDeck deck)
         {
             while (index < tokens.Count)
@@ -1140,15 +1212,7 @@ namespace EclipseDeckReader
                 List<string> record = ReadRecordTokensUntilSlash(tokens, ref index);
                 if (record.Count == 0) continue;
 
-                string wellName = record[0];
-
-                // Ensure well exists or register on the fly if WELSPECS was declared earlier or differently
-                if (!deck.Wells.TryGetValue(wellName, out var wellData))
-                {
-                    wellData = new WellData();
-                    deck.Wells[wellName] = wellData;
-                }
-
+                string wellPattern = record[0];
                 string wellStatus = record.Count > 1 && record[1] != "1*" ? record[1].ToUpper() : "OPEN";
                 string mode = record.Count > 2 && record[2] != "1*" ? record[2].ToUpper() : "BHP";
 
@@ -1159,21 +1223,23 @@ namespace EclipseDeckReader
                 double resRat = ParseOptionalDouble(record, 7);
                 double bhp = ParseOptionalDouble(record, 8);
 
-                wellData.ControlHistory.Add(new WellControlRecord
+                foreach (var wellData in ResolveMatchingWells(deck, wellPattern))
                 {
-                    EffectiveDate = deck.CurrentSimDate,
-                    WellType = "PRODUCER",
-                    InjectionPhase = "NONE",
-                    WellStatus = wellStatus,
-                    ControlMode = mode,
-                    OilRateTarget = oRat,
-                    WaterRateTarget = wRat,
-                    GasRateTarget = gRat,
-                    LiquidRateTarget = lRat,
-                    MinBhpLimit = bhp
-                });
+                    wellData.ProducerControlHistory.Add(new ProducerControlRecord
+                    {
+                        EffectiveDate = deck.CurrentSimDate,
+                        Status = wellStatus,
+                        ControlMode = mode,
+                        OilRateTarget = oRat,
+                        WaterRateTarget = wRat,
+                        GasRateTarget = gRat,
+                        LiquidRateTarget = lRat,
+                        ResvRateTarget = resRat,
+                        MinBhpLimit = bhp
+                    });
 
-                Console.WriteLine($"      [Schedule] WCONPROD parsed for well '{wellName}': Status={wellStatus}, Mode={mode}, BHP={bhp}");
+                    Console.WriteLine($"      [Schedule] WCONPROD parsed for well '{wellData.Specification.WellName}': Status={wellStatus}, Mode={mode}, BHP={bhp}");
+                }
             }
         }
 
@@ -1193,37 +1259,72 @@ namespace EclipseDeckReader
                 List<string> record = ReadRecordTokensUntilSlash(tokens, ref index);
                 if (record.Count == 0) continue;
 
-                string wellName = record[0];
-
-                if (!deck.Wells.TryGetValue(wellName, out var wellData))
-                {
-                    wellData = new WellData();
-                    deck.Wells[wellName] = wellData;
-                }
-
+                string wellPattern = record[0];
                 string phaseType = record.Count > 1 && record[1] != "1*" ? record[1].ToUpper() : "WATER";
                 string wellStatus = record.Count > 2 && record[2] != "1*" ? record[2].ToUpper() : "OPEN";
                 string mode = record.Count > 3 && record[3] != "1*" ? record[3].ToUpper() : "RATE";
                 double rate = ParseOptionalDouble(record, 4);
-                double maxBhp = ParseOptionalDouble(record, 5);
+                double resvRate = ParseOptionalDouble(record, 5);
+                double maxBhp = ParseOptionalDouble(record, 6);
 
-                var control = new WellControlRecord
+                foreach (var wellData in ResolveMatchingWells(deck, wellPattern))
                 {
-                    EffectiveDate = deck.CurrentSimDate,
-                    WellType = "INJECTOR",
-                    InjectionPhase = phaseType,
-                    WellStatus = wellStatus,
-                    ControlMode = mode,
-                    TargetRate = rate,
-                    MaxBhpLimit = maxBhp
-                };
+                    wellData.InjectorControlHistory.Add(new InjectorControlRecord
+                    {
+                        EffectiveDate = deck.CurrentSimDate,
+                        InjectionPhase = phaseType,
+                        Status = wellStatus,
+                        ControlMode = mode,
+                        TargetRate = rate,
+                        ResvRateTarget = resvRate,
+                        MaxBhpLimit = maxBhp
+                    });
 
-                if (phaseType == "WATER") control.WaterRateTarget = rate;
-                else if (phaseType == "GAS") control.GasRateTarget = rate;
-
-                wellData.ControlHistory.Add(control);
-                Console.WriteLine($"      [Schedule] WCONINJE parsed for well '{wellName}': Phase={phaseType}, Status={wellStatus}, Rate={rate}");
+                    Console.WriteLine($"      [Schedule] WCONINJE parsed for well '{wellData.Specification.WellName}': Phase={phaseType}, Status={wellStatus}, Mode={mode}, Rate={rate}, MaxBHP={maxBhp}");
+                }
             }
+        }
+
+        private static void ParseMultregtSection(List<Token> tokens, ref int index, List<MultregtRecord> multregtRecords)
+        {
+            int countBefore = multregtRecords.Count;
+
+            while (index < tokens.Count)
+            {
+                ClearLeadingLayoutSpacers(tokens, ref index);
+                if (index >= tokens.Count) break;
+
+                // Standalone '/' closes the MULTREGT keyword block
+                if (tokens[index].Type == TokenType.Slash || tokens[index].Content.ToString() == "/")
+                {
+                    index++;
+                    break;
+                }
+
+                if (tokens[index].Type == TokenType.Keyword)
+                    break;
+
+                List<string> record = ReadRecordTokensUntilSlash(tokens, ref index);
+                if (record.Count < 3) continue;
+
+                int.TryParse(record[0], out int fromRegion);
+                int.TryParse(record[1], out int toRegion);
+                double multiplier = ParseOptionalDouble(record, 2, fallback: 1.0);
+
+                string direction = (record.Count > 3 && record[3] != "1*") ? record[3].ToUpperInvariant() : "XYZ";
+                string connType = (record.Count > 4 && record[4] != "1*") ? record[4].ToUpperInvariant() : "ALL";
+                string regFlag = (record.Count > 5 && record[5] != "1*") ? record[5].ToUpperInvariant() : "M";
+
+                multregtRecords.Add(new MultregtRecord(
+                    fromRegion,
+                    toRegion,
+                    multiplier,
+                    direction,
+                    connType,
+                    regFlag));
+            }
+
+            Console.WriteLine($"      [Data] MULTREGT: Loaded {multregtRecords.Count - countBefore} region transmissibility multiplier(s).");
         }
     }
 }

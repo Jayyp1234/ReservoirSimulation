@@ -7,13 +7,13 @@ namespace ReservoirSimulator
 {
     internal class ExportWellVTK
     {
-        public static void ExportWells<T>(string outputDirectory, Grid<T>[] Grids, Well<T>[] Wells)
+        public static void ExportWells<T>(string outputDirectory, Grid<T>[] Grids, List<Well<T>> Wells)
             where T : struct, IVectorND<T>
         {
             Directory.CreateDirectory(outputDirectory);
             foreach (var well in Wells)
             {
-                double[][] Trajectory = well.GetTrajectoryCoordinates(Grids);
+                double[][] Trajectory = well.GetTrajectoryCoordinates();
                 ExportWellAsVtk(Path.Combine(outputDirectory, $"{well.Name}.vtk"), well.Name, Trajectory);
             }
         }

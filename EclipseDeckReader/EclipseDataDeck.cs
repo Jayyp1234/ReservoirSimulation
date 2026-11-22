@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using Tensorflow.Operations.Initializers;
 using static SepalSolver.Math;
 
 namespace EclipseDeckReader
@@ -11,7 +10,7 @@ namespace EclipseDeckReader
         public int NX { get; set; }
         public int NY { get; set; }
         public int NZ { get; set; }
-        
+
         // 2. Unit System ("FIELD", "METRIC", "LAB", "PVT-M") - ECLIPSE defaults to FIELD
         public string UnitSystem { get; set; } = "FIELD";
 
@@ -31,6 +30,8 @@ namespace EclipseDeckReader
         public List<int> SatnumArray { get; set; } = [];
         public List<int> PvtnumArray { get; set; } = [];
         public List<int> EquinumArray { get; set; } = [];
+        public List<int> FluxnumArray { get; set; } = [];
+        public List<int> MultnumArray { get; set; } = [];
 
         // 5. Block-Centered Grid Dimension Arrays
         public List<double> DxArray { get; set; } = [];
@@ -59,10 +60,12 @@ namespace EclipseDeckReader
         public List<List<double>> RawPvtwTables { get; } = [];
         public List<List<List<double>>> RawSwofTables { get; } = [];
         public List<List<List<double>>> RawSgofTables { get; } = [];
-        public List<List<double>> RawEquilTables { get; } = []; 
+        public List<List<double>> RawEquilTables { get; } = [];
+        public List<List<List<double>>> RawRsvdTables { get; } = [];
 
-        // 10. Fault Structures
+        // 10. Fault Structures & Region Transmissibility Multipliers
         public Dictionary<string, FaultRecord> Faults { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public List<MultregtRecord> MultregtRecords { get; } = [];
 
         // 11. Dynamic Well Networks Block
         public Dictionary<string, WellData> Wells { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -71,4 +74,12 @@ namespace EclipseDeckReader
         public DateTime StartDate { get; set; }                       // Master baseline anchor point (Day 0)
         public DateTime CurrentSimDate { get; set; } = DateTime.Now;  // Tracks active day as scheduler advances
     }
+
+    public readonly record struct MultregtRecord(
+        int FromRegion,
+        int ToRegion,
+        double Multiplier,
+        string Direction = "XYZ",
+        string ConnectionType = "ALL",
+        string RegionFlag = "M");
 }

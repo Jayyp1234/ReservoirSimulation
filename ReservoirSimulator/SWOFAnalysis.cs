@@ -44,11 +44,21 @@ namespace ReservoirSimulator
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        
+
         public ADiff<T> EvaluatePcow<T>(ADiff<T> sw) where T : struct, IVectorND<T>
         {
-            // Brooks-Corey Sw* = (sw - swi) / (1.0 - swi)
-            ADiff<T> swStar = (sw - Swi) / (1.0 - Swi);
-            return Pd * Pow(swStar, -InvLambda);
+            const double eps = 1e-4;
+            double denom = 1.0 - Swi;
+            ADiff<T> swStar = (sw - Swi) / denom;
+
+            if (swStar.Value >= eps)
+                return Pd * Pow(swStar, -InvLambda);
+
+            // C1-continuous linear extension for swStar < eps (prevents NaN/Inf at sw <= Swi)
+            double pcAtEps = Pd * Pow(eps, -InvLambda);
+            double dPcDswStarAtEps = -Pd * InvLambda * Pow(eps, -InvLambda - 1.0);
+            return pcAtEps + dPcDswStarAtEps * (swStar - eps);
         }
     }
 

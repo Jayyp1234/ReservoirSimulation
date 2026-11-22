@@ -49,7 +49,7 @@ namespace EclipseDeckReader
             PrintRegionStats("Active Cell Flags (ACTNUM)", deck.ActnumArray);
             PrintRegionStats("Saturation Regions (SATNUM)", deck.SatnumArray);
             PrintRegionStats("PVT Properties Regions (PVTNUM)", deck.PvtnumArray);
-            PrintRegionStats("Equilibrium Regions (EQUINUM)", deck.EquinumArray); 
+            PrintRegionStats("Equilibrium Regions (EQUINUM)", deck.EquinumArray);
             Console.WriteLine();
 
             // 5. Multi-Region Hydrostatic Equilibration Summary block
@@ -65,14 +65,13 @@ namespace EclipseDeckReader
             }
             Console.WriteLine();
 
-
-            // 5. Rock Mechanical Properties
+            // 6. Rock Mechanical Properties
             Console.WriteLine("## ROCK MECHANICS AND PORE EXPANSION");
-            Console.WriteLine($"* Reference Pressure ($P_{{ref}}$)  : {deck.RockReferencePressure:F2} psi");
-            Console.WriteLine($"* Formation Compressibility ($c_r$): {deck.RockCompressibility:E4} 1/psi");
+            Console.WriteLine($"* Reference Pressure (Pref)   : {deck.RockReferencePressure:F2} psi");
+            Console.WriteLine($"* Formation Compressibility (cr): {deck.RockCompressibility:E4} 1/psi");
             Console.WriteLine();
 
-            // 6. Fault Multipliers
+            // 7. Fault Multipliers
             Console.WriteLine("## FAULT MULTIPLIERS");
             Console.WriteLine($"* Registered Faults Count  : {deck.Faults.Count}");
             foreach (var kvp in deck.Faults)
@@ -81,12 +80,12 @@ namespace EclipseDeckReader
             }
             Console.WriteLine();
 
-            // 7. Dynamic Well Management Block (Added Well Network Summary Engine)
+            // 8. Dynamic Well Management Block
             Console.WriteLine("## WELL GEOMETRY AND OPERATIONS NETWORK");
             Console.WriteLine($"* Total Wells Registered    : {deck.Wells.Count}");
             if (deck.Wells.Count == 0)
             {
-                Console.WriteLine("* [NO WELL NETWORKS REGISTED OR PARSED]");
+                Console.WriteLine("* [NO WELL NETWORKS REGISTERED OR PARSED]");
             }
             else
             {
@@ -97,7 +96,7 @@ namespace EclipseDeckReader
 
                     Console.WriteLine($"\n* Well Entity: {name}");
 
-                    // A. Print Master Well Specifications
+                    // A. Master Well Specifications (WELSPECS)
                     if (data.Specification != null)
                     {
                         var spec = data.Specification;
@@ -108,38 +107,36 @@ namespace EclipseDeckReader
                         Console.WriteLine("  ├─ Group Reference : [NO INITIAL SPECIFICATION RECORD LOADED]");
                     }
 
-                    // B. Print Interval Completions (COMPDAT)
-                    Console.WriteLine($"  ├─ Interval Completions Count: {data.CompletionHistory.Count}");
+                    // B. Wellbore Interval Completions
+                    Console.WriteLine($"  ├─ Wellbore Completions Count: {data.CompletionHistory.Count}");
                     for (int c = 0; c < data.CompletionHistory.Count; c++)
                     {
                         var comp = data.CompletionHistory[c];
-                        Console.WriteLine($"  │  └─ Comp [{c + 1}]: Local Cell Coordinates (I, J): ({comp.I}, {comp.J}) | K-Layers: {comp.KStart}-{comp.KEnd} | Status: {comp.Status,-4} | Diameter: {comp.WellBoreDiameter:F3} | Skin: {comp.EffectiveSkin:F2}");
+                        Console.WriteLine($"  │  └─ Comp [{c + 1}] [{comp.EffectiveDate:yyyy-MM-dd}]: Cell (I, J): ({comp.I + 1}, {comp.J + 1}) | K-Layers: {comp.KStart}-{comp.KEnd} | Status: {comp.Status} | Diameter: {comp.WellBoreDiameter:F3} | Skin: {comp.EffectiveSkin:F2}");
                     }
 
-                    // C. Print Operational Constraints Over Time Timeline (WCONPROD / WCONINJE)
-                    Console.WriteLine($"  └─ Control Constraint Schedules Count: {data.ControlHistory.Count}");
-
-                    // Sort historical profiles chronologically to show clear step actions
-                    var sortedControls = data.ControlHistory.OrderBy(ch => ch.EffectiveDate).ToList();
-                    for (int h = 0; h < sortedControls.Count; h++)
+                    // D. Producer Control Schedules (WCONPROD)
+                    Console.WriteLine($"  ├─ Producer Control Schedules (WCONPROD): {data.ProducerControlHistory.Count}");
+                    var sortedProdControls = data.ProducerControlHistory.OrderBy(ch => ch.EffectiveDate).ToList();
+                    for (int h = 0; h < sortedProdControls.Count; h++)
                     {
-                        var ctrl = sortedControls[h];
-                        Console.Write($"     └─ Date [{ctrl.EffectiveDate:yyyy-MM-dd}] Mode: {ctrl.ControlMode,-5} ");
+                        var ctrl = sortedProdControls[h];
+                        Console.WriteLine($"  │  └─ Date [{ctrl.EffectiveDate:yyyy-MM-dd}] Status: {ctrl.Status,-4} | Mode: {ctrl.ControlMode,-4} | Oil: {ctrl.OilRateTarget:F1} | Water: {ctrl.WaterRateTarget:F1} | Gas: {ctrl.GasRateTarget:F1} | Liq: {ctrl.LiquidRateTarget:F1} | Resv: {ctrl.ResvRateTarget:F1} | Min BHP: {ctrl.MinBhpLimit:F1}");
+                    }
 
-                        if (ctrl.ControlMode.Contains("RAT")) // Rate-driven constraints
-                        {
-                            Console.WriteLine($"| Targets -> Oil: {ctrl.OilRateTarget:F1} | Water: {ctrl.WaterRateTarget:F1} | Gas: {ctrl.GasRateTarget:F1} | Liq: {ctrl.LiquidRateTarget:F1} | Min BHP Limit: {ctrl.MinBhpLimit:F1}");
-                        }
-                        else // Pressure or Injection control constraints
-                        {
-                            Console.WriteLine($"| Limits  -> Max BHP Limit: {ctrl.MaxBhpLimit:F1} | Fixed Water Inj Rate: {ctrl.WaterRateTarget:F1} | Fixed Gas Inj Rate: {ctrl.GasRateTarget:F1}");
-                        }
+                    // E. Injector Control Schedules (WCONINJE)
+                    Console.WriteLine($"  └─ Injector Control Schedules (WCONINJE): {data.InjectorControlHistory.Count}");
+                    var sortedInjControls = data.InjectorControlHistory.OrderBy(ch => ch.EffectiveDate).ToList();
+                    for (int h = 0; h < sortedInjControls.Count; h++)
+                    {
+                        var ctrl = sortedInjControls[h];
+                        Console.WriteLine($"     └─ Date [{ctrl.EffectiveDate:yyyy-MM-dd}] Phase: {ctrl.InjectionPhase,-5} | Status: {ctrl.Status,-4} | Mode: {ctrl.ControlMode,-4} | Rate: {ctrl.TargetRate:F1} | Resv: {ctrl.ResvRateTarget:F1} | Max BHP: {ctrl.MaxBhpLimit:F1}");
                     }
                 }
             }
             Console.WriteLine();
 
-            // 8. Fluid Properties Summary Block
+            // 9. Fluid Properties Summary Block
             Console.WriteLine("## FLUID PVT REGIONS COUNT");
             PrintTableGroupOverview("Oil Live PVT Properties (PVTO)", deck.RawPvtoTables);
             PrintTableGroupOverview("Oil Dead PVT Properties (PVDO)", deck.RawPvdoTables);
@@ -148,7 +145,7 @@ namespace EclipseDeckReader
             PrintTableGroupOverview("Gas Dead PVT Properties (PVDG)", deck.RawPvdgTables);
             Console.WriteLine();
 
-            // 9. Rock-Fluid Properties Block
+            // 10. Rock-Fluid Properties Block
             Console.WriteLine("## ROCK-FLUID INTERFACIAL RELATIONS");
             PrintTableGroupOverview("Water-Oil Saturation Functions (SWOF)", deck.RawSwofTables);
             PrintTableGroupOverview("Gas-Oil Saturation Functions (SGOF)", deck.RawSgofTables);

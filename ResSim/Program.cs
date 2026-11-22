@@ -22,7 +22,6 @@ using System.Text;
     }
 
     // 2. Initialize your reader and track performance
-    tic();
     EclipseDataDeck parsedDeck = null;
     try
     {
@@ -45,7 +44,11 @@ using System.Text;
     }
 
     OilWaterReservoir Reservoir = new(parsedDeck);
-
-    Reservoir.Simulate2Phase([0, 3650]);
+    tic();
+    Reservoir.Initialize();
+    Reservoir.Simulate([0, 3650]);
     Console.WriteLine($"Simulation took {toc()} sec");
+
+    string outputdir = @"C:\Users\lateef.a.kareem\Documents\SimulationResult";
+    Reservoir.ExportResults(outputdir);
 }

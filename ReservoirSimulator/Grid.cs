@@ -5,6 +5,8 @@ namespace ReservoirSimulator
 {
     public class Grid<T> where T : struct, IVectorND<T>
     {
+        public Offsets Offset { get; set; }
+        public string PerforationStatus { get; set; } = "SHUT";
         // Define conversion constants
         const double alpha = 1.127e-3, beta = 5.615;
         public bool LogResult { get; set; }
@@ -74,6 +76,15 @@ namespace ReservoirSimulator
             Utility.AddIfPresent(SG, sg);
             Utility.AddIfPresent(PB, pb);
             Utility.AddIfPresent(PD, pd);
+        }
+
+        public readonly struct Offsets
+        {
+            // Flattened indices into values[] for diagonal block (i, i) of size nc x nc
+            // Index mapping: [eq * nc + var]
+            public readonly int[] Diag;
+
+            public Offsets(int nc) => Diag = new int[nc * nc];
         }
     }
 }

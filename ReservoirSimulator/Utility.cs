@@ -18,7 +18,6 @@ namespace ReservoirSimulator
         {
             ["Length"] = ["ft", "m", "m", "cm"],
             ["Depth"] = ["ft", "m", "m", "cm"],
-            ["Grid Dimensions (DX, DY, DZ)"] = ["ft", "m", "m", "cm"],
             ["Wellbore Diameter"] = ["ft", "m", "m", "cm"],
             ["Pressure"] = ["psi", "bar", "atm", "atm"],
             ["Capillary Pressure (Pc)"] = ["psi", "bar", "atm", "atm"],
@@ -28,7 +27,9 @@ namespace ReservoirSimulator
             ["Porosity"] = ["fraction", "fraction", "fraction", "fraction"],
             ["Transmissibility"] = ["cP*rb/(day*psi)", "cP*rm^3/(day*bar)", "cP*rm^3/(day*atm)", "cP*rcc/(hr*atm)"],
             ["Well Productivity Index (PI)"] = ["STB/(day*psi)", "sm^3/(day*bar)", "sm^3/(day*atm)", "scc/(hr*atm)"],
-            ["Liquid Surface Rate (Oil / Water)"] = ["STB/day", "sm^3/day", "sm^3/day", "scc/hr"],
+            ["Oil Surface Rate"] = ["STB/day", "sm^3/day", "sm^3/day", "scc/hr"],
+            ["Water Surface Rate"] = ["STB/day", "sm^3/day", "sm^3/day", "scc/hr"],
+            ["Liquid Surface Rate"] = ["STB/day", "sm^3/day", "sm^3/day", "scc/hr"],
             ["Gas Surface Rate"] = ["Mscf/day", "sm^3/day", "sm^3/day", "scc/hr"],
             ["Reservoir Volume Rate"] = ["rb/day", "rm^3/day", "rm^3/day", "rcc/hr"],
             ["Cumulative Liquid Volume"] = ["STB", "sm^3", "sm^3", "scc"],

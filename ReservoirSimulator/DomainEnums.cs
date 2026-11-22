@@ -12,7 +12,8 @@
     public enum WellStatus
     {
         OPEN,
-        CLOSED,
+        STOP,
+        SHUT
     }
 
     public enum ConstraintType
@@ -23,7 +24,8 @@
         ORATE,
         WRATE,
         GRATE,
-        RATE
+        RATE,
+        RESV
     }
 
     public enum WellType

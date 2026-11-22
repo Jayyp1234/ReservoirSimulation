@@ -11,8 +11,7 @@ namespace ReservoirSimulator
         {
             int numWells = Wells.Count;
             int numActiveGrids = Grids.Count(grid => grid.isActive);
-            int numActiveWells = Wells.Count(well => well.isActive);
-            int totalDofs = nc * numActiveGrids + 2 * numActiveWells;
+            int totalDofs = nc * numActiveGrids + 2 * numWells;
 
             // 1. Exact capacity estimation
             int totalGridBlocks = numActiveGrids; // Diagonal blocks
@@ -52,9 +51,9 @@ namespace ReservoirSimulator
                 }
             }
 
-            void AddGridWellBlock(int gridActiveIdx, int wellIdx)
+            void AddGrid_wellBlock(int gridActiveIdx, int WellIdx)
             {
-                int I0 = gridActiveIdx * nc,  J0 = nc * numActiveGrids + 2 * wellIdx;
+                int I0 = gridActiveIdx * nc,  J0 = nc * numActiveGrids + 2 * WellIdx;
                 for (int ii = 0; ii < nc; ii++)
                 {
                     for (int jj = 0; jj < 2; jj++)
@@ -62,9 +61,9 @@ namespace ReservoirSimulator
                 }
             }
 
-            void AddWellGridBlock(int activeWellIdx, int gridActiveIdx)
+            void AddWell_gridBlock(int WellIdx, int gridActiveIdx)
             {
-                int I0 = nc * numActiveGrids + 2 * activeWellIdx, J0 = gridActiveIdx * nc;
+                int I0 = nc * numActiveGrids + 2 * WellIdx, J0 = gridActiveIdx * nc;
                 for (int ii = 0; ii < 2; ii++)
                 {
                     for (int jj = 0; jj < nc; jj++)
@@ -72,9 +71,9 @@ namespace ReservoirSimulator
                 }
             }
 
-            void AddWellInternalBlock(int activeWellIdx)
+            void AddWellInternalBlock(int WellIdx)
             {
-                int I0 = nc * numActiveGrids + 2 * activeWellIdx;
+                int I0 = nc * numActiveGrids + 2 * WellIdx;
                 for (int ii = 0; ii < 2; ii++)
                 {
                     for (int jj = 0; jj < 2; jj++)
@@ -102,73 +101,26 @@ namespace ReservoirSimulator
             }
 
             // 4. Active Wells Internal Closure and Perforations
+            int wellIdx = 0;
             foreach (var well in Wells)
             {
-                if(!well.isActive) continue;
-                AddWellInternalBlock(well.ActiveIndex);
+                AddWellInternalBlock(wellIdx);
                 foreach (int m in well.PerfNatIndex)
                 {
                     var mgrid = Grids[m];
                     if (!mgrid.isActive) continue;
                     int i = mgrid.ActiveIndex;
 
-                    AddGridWellBlock(i, well.ActiveIndex);
-                    AddWellGridBlock(well.ActiveIndex, i);
+                    AddGrid_wellBlock(i, wellIdx);
+                    AddWell_gridBlock(wellIdx, i);
                 }
+                wellIdx++;
             }
 
             double[] ones = Ones(I.Count);
             var jac = new SparseMatrix(I, J, ones, totalDofs, totalDofs);
             var crs = jac.CompressByRow();
             return (totalDofs, [.. crs.col_index], [.. crs.row_start], [.. crs.values]);
-        }
-
-        public readonly struct CellOffsets
-        {
-            // Flattened indices into values[] for diagonal block (i, i) of size nc x nc
-            // Index mapping: [eq * nc + var]
-            public readonly int[] Diag;
-
-            public CellOffsets(int nc) => Diag = new int[nc * nc];
-        }
-
-        public readonly struct FaceOffsets
-        {
-            public readonly int NeighborActiveIndex;
-            // Flattened indices into values[]:
-            // Block (i, i) sensitivities (slots 0 .. nc-1): [eq * nc + var]
-            public readonly int[] Self;
-            // Block (i, j) sensitivities (slots nc .. 2*nc-1): [eq * nc + var]
-            public readonly int[] Neighbor;
-
-            public FaceOffsets(int nc, int neighborActiveIdx)
-            {
-                NeighborActiveIndex = neighborActiveIdx;
-                Self = new int[nc * nc];
-                Neighbor = new int[nc * nc];
-            }
-        }
-
-        public readonly struct WellOffsets
-        {
-            public readonly int RowP_Pwell;
-            public readonly int RowP_Qwell;
-            public readonly int RowQ_Pwell;
-            public readonly int RowQ_Qwell;
-
-            // Per perforation:
-            // [perfIdx]: grid cell equation sensitivities to Pwell: size nc
-            public readonly int[][] Rm_dPwell;
-            // [perfIdx]: well rate equation sensitivities to grid cell variables: size nc
-            public readonly int[][] RowQ_dGrid;
-
-            public WellOffsets(int rpP, int rpQ, int rqP, int rqQ, int[][] rmDPwell, int[][] rqDGrid)
-            {
-                RowP_Pwell = rpP; RowP_Qwell = rpQ;
-                RowQ_Pwell = rqP; RowQ_Qwell = rqQ;
-                Rm_dPwell = rmDPwell;
-                RowQ_dGrid = rqDGrid;
-            }
         }
 
 
@@ -181,15 +133,11 @@ namespace ReservoirSimulator
             return idx;
         }
 
-        public static (CellOffsets[] cellOffsets, FaceOffsets[][][] faceOffsets, WellOffsets[] wellOffsets) PrecomputeOffsets<T>
+        public static void PrecomputeOffsets<T>
             (int nc, int[] row_ptr, int[] col_index, IReadOnlyList<Grid<T>> Grids, IReadOnlyList<Well<T>> Wells) where T : struct, IVectorND<T>
         {
             int numWells = Wells.Count;
             int numActiveGrids = Grids.Count(grid => grid.isActive);
-            int numActiveWells = Wells.Count(well => well.isActive);
-            var cellOffsets = new CellOffsets[numActiveGrids];
-            var faceOffsets = new FaceOffsets[Grids.Count][][];
-            var wellOffsets = new WellOffsets[numActiveWells];
 
             // 1. Grid Diagonal & Face Offsets
             for (int m = 0; m < Grids.Count; m++)
@@ -201,7 +149,7 @@ namespace ReservoirSimulator
                 int baseRow_i = nc * i, baseCol_i = nc * i;
 
                 // Diagonal Block (i, i)
-                var cOff = new CellOffsets(nc);
+                var cOff = new Grid<T>.Offsets(nc);
                 for (int eq = 0; eq < nc; eq++)
                 {
                     for (int v = 0; v < nc; v++)
@@ -209,18 +157,15 @@ namespace ReservoirSimulator
                         cOff.Diag[eq * nc + v] = FindValueIndex(row_ptr, col_index, baseRow_i + eq, baseCol_i + v);
                     }
                 }
-                cellOffsets[i] = cOff;
+                mgrid.Offset = cOff;
 
                 
                 // Faces
                 int faceCount = mgrid.Faces.Length;
-                faceOffsets[m] = new FaceOffsets[faceCount][];
-
                 for (int f = 0; f < faceCount; f++)
                 {
                     var face = mgrid.Faces[f];
                     int connCount = face.GridIndices.Count;
-                    faceOffsets[m][f] = new FaceOffsets[connCount];
 
                     for (int c = 0; c < connCount; c++)
                     {
@@ -231,41 +176,37 @@ namespace ReservoirSimulator
                         int j = ngrid.ActiveIndex;
                         int baseCol_j = nc * j;
 
-                        var fOff = new FaceOffsets(nc, j);
+                        var fOff = new Face.Offsets(nc, j);
                         for (int eq = 0; eq < nc; eq++)
                         {
                             for (int v = 0; v < nc; v++)
                             {
-                                // Block (i, i)
-                                fOff.Self[eq * nc + v] = FindValueIndex(row_ptr, col_index, baseRow_i + eq, baseCol_i + v);
-                                // Block (i, j)
                                 fOff.Neighbor[eq * nc + v] = FindValueIndex(row_ptr, col_index, baseRow_i + eq, baseCol_j + v);
                             }
                         }
-                        faceOffsets[m][f][c] = fOff;
+                        face.Offset.Add(fOff);
                     }
                 }
             }
 
+            int wIdx = 0;
+
             // 2. Active Well Offsets
             foreach (var well in Wells)
             {
-                if (!well.isActive) continue;
-                
-                int wIdx = well.ActiveIndex;
-                int row_p = nc * numActiveGrids + 2 * wIdx + 0;
-                int row_q = nc * numActiveGrids + 2 * wIdx + 1;
-                int col_pwell = row_p;
-                int col_qwell = row_q;
+                int rowflow = nc * numActiveGrids + 2 * wIdx + 0;
+                int rowconst = nc * numActiveGrids + 2 * wIdx + 1;
+                int col_pwell = rowflow;
+                int col_qwell = rowconst;
 
-                int rpP = FindValueIndex(row_ptr, col_index, row_p, col_pwell);
-                int rpQ = FindValueIndex(row_ptr, col_index, row_p, col_qwell);
-                int rqP = FindValueIndex(row_ptr, col_index, row_q, col_pwell);
-                int rqQ = FindValueIndex(row_ptr, col_index, row_q, col_qwell);
+                int rflowP = FindValueIndex(row_ptr, col_index, rowflow, col_pwell);
+                int rflowQ = FindValueIndex(row_ptr, col_index, rowflow, col_qwell);
+                int rconstP = FindValueIndex(row_ptr, col_index, rowconst, col_pwell);
+                int rconstQ = FindValueIndex(row_ptr, col_index, rowconst, col_qwell);
 
                 int perfCount = well.PerfNatIndex.Count;
                 var rmDPwell = new int[perfCount][];
-                var rqDGrid = new int[perfCount][];
+                var rflowDGrid = new int[perfCount][];
 
                 for (int p = 0; p < perfCount; p++)
                 {
@@ -278,19 +219,17 @@ namespace ReservoirSimulator
                     int baseCol_i = nc * i;
 
                     rmDPwell[p] = new int[nc];
-                    rqDGrid[p] = new int[nc];
+                    rflowDGrid[p] = new int[nc];
 
                     for (int eq = 0; eq < nc; eq++)
                     {
                         rmDPwell[p][eq] = FindValueIndex(row_ptr, col_index, baseRow_i + eq, col_pwell);
-                        rqDGrid[p][eq] = FindValueIndex(row_ptr, col_index, row_q, baseCol_i + eq);
+                        rflowDGrid[p][eq] = FindValueIndex(row_ptr, col_index, rowflow, baseCol_i + eq);
                     }
                 }
-
-                wellOffsets[wIdx] = new WellOffsets(rpP, rpQ, rqP, rqQ, rmDPwell, rqDGrid);
+                well.Offset = new Well<T>.Offsets(rflowP, rflowQ, rconstP, rconstQ, rmDPwell, rflowDGrid);
+                wIdx++;
             }
-
-            return (cellOffsets, faceOffsets, wellOffsets);
         }
     }
 }

@@ -1,61 +1,50 @@
 ﻿using EclipseDeckReader;
 using Microsoft.CodeAnalysis;
 using SepalSolver;
-using System.Text;
+using System.Globalization;
 using static ReservoirSimulator.Math;
 using static ReservoirSimulator.ReservoirJacobian;
-using static TorchSharp.torch.optim.lr_scheduler.impl;
 
 namespace ReservoirSimulator
 {
     public class OilWaterReservoir
     {
         public int funcall;
-        public List<double[]> P, S, Rate, OilRate, WaterRate, GasRate, Pwf, WaterCut;
         public List<double> Time, SweepEff;
         readonly Func<ADiff<Vector4d>, ADiff<Vector4d>> Er;
-        (double maxDP, double maxDS, int i_p, int i_s) CheckSolution(double[] xs )
+        (double maxDP, double maxDS, int i_p, int i_s) CheckSolution(double[] xs)
         {
             int i_p = 0, i_s = 0; double dp, maxDp = 0, ds, maxDs = 0;
             for (int i = 0; i < Ngrids; i++)
             {
                 dp = Grids[i].Po_np1 - Grids[i].Po_n;
-                if(Abs(dp) > maxDp) { maxDp = Abs(dp); i_p = i; }
+                if (Abs(dp) > maxDp) { maxDp = Abs(dp); i_p = i; }
                 ds = Grids[i].Sw_np1 - Grids[i].Sw_n;
                 if (Abs(ds) > maxDs) { maxDs = Abs(ds); i_s = i; }
             }
             return (maxDp, maxDs, i_p, i_s);
         }
 
-        readonly int Nx, Ny, Nz, NxNy, Ngrids, NumActiveGrids, Nwells, NumActiveWells;
-        readonly double[] Kx, Ky, Kz, Φ, Dx, Dy, Dz, Z, zTop;
-        double[] Po_n, Sw_n, Pw_n, So_n, Qwells_n, Pwells_n, ErSw_Bw_n, ErSo_Bo_n, Coord, Zcorn, PoreVolume; 
-        readonly double krw0, kro0, Pb, Prefw, Prefr, Pe, Pw_woc, Sw_r, So_r,
-            Bo0, Bw0, Po_woc, Z_woc, co, cw, cr, bo, bw, nw, no, np,
-            μo0, μw0, γo0, γw0, P_datum, Z_datum, Pc_max;
+        readonly int Nx, Ny, Nz, NxNy, Ngrids, NumActiveGrids, Nwells, NumWells;
+        readonly double[] Kx, Ky, Kz, Φ, Dx, Dy, Dz, zTop;
+        double[] Coord, Zcorn;
+        readonly double Prefr, cr, γo0, γw0;
         Grid<Vector4d>[] Grids;
         List<Well<Vector4d>> Wells;
         Aquifer Aquifer;
-        double[,] Trans;
-        bool[,] Water_Upstream, Oil_Upstream;
-        int[] Actnum, Satnum, Pvtnum;
-        List<int> Columns2Delete = [];
         Dictionary<(int, int), EQUILPressureDepth> EquilPVTCombinations = [];
         EclipseDataDeck DATA;
         PVTWAnalysis[] PVTWs;
         PVDOAnalysis[] PVDOs;
         SWOFAnalysis[] SWOFs;
-
-        
-
         public OilWaterReservoir(EclipseDataDeck Data)
         {
             DATA = Data;
             // RUNSPEC
-            Nx = Data.NX; 
-            Ny = Data.NY; 
-            Nz = Data.NZ; 
-            NxNy = Nx * Ny; 
+            Nx = Data.NX;
+            Ny = Data.NY;
+            Nz = Data.NZ;
+            NxNy = Nx * Ny;
             Ngrids = Nx * Ny * Nz;
 
             Units incomingUnit = Data.UnitSystem.ToUpper() switch
@@ -70,19 +59,19 @@ namespace ReservoirSimulator
             // GRIDS
             if (Data.DxArray.Count > 0 && Data.DyArray.Count > 0 && Data.DzArray.Count > 0)
             {
-                Dx = [.. Utility.Convert(Data.DxArray, "Length", incomingUnit, Units.FIELD)]; 
+                Dx = [.. Utility.Convert(Data.DxArray, "Length", incomingUnit, Units.FIELD)];
                 Dy = [.. Utility.Convert(Data.DyArray, "Length", incomingUnit, Units.FIELD)];
                 Dz = [.. Utility.Convert(Data.DzArray, "Depth", incomingUnit, Units.FIELD)];
                 zTop = Data.ZtopArray.Count > 0 ? [.. Utility.Convert(Data.ZtopArray, "Depth", incomingUnit, Units.FIELD)] : new double[NxNy];
             }
-            else 
-            { 
-                Coord = [.. Utility.Convert(Data.CoordArray, "Length", incomingUnit, Units.FIELD)]; 
+            else
+            {
+                Coord = [.. Utility.Convert(Data.CoordArray, "Length", incomingUnit, Units.FIELD)];
                 Zcorn = [.. Utility.Convert(Data.ZcornArray, "Depth", incomingUnit, Units.FIELD)];
             }
-            Φ = [.. Data.PorosityArray]; 
+            Φ = [.. Data.PorosityArray];
             Kx = [.. Data.PermXArray]; Ky = [.. Data.PermYArray]; Kz = [.. Data.PermZArray];
-            
+
             Grids = Zcorn is not null ? Utility.ProcessGrid<Vector4d>(Nx, Ny, Nz, Coord, Zcorn, Φ, Kx, Ky, Kz) :
                 Utility.ProcessGrid<Vector4d>(Nx, Ny, Nz, Dx, Dy, Dz, zTop, Φ, Kx, Ky, Kz);
 
@@ -91,7 +80,7 @@ namespace ReservoirSimulator
             foreach (var pvtw in PVTWs) pvtw.FitProperties();
 
             // PVDO
-            PVDOs = [..Data.RawPvdoTables.Select(pvdo=>new PVDOAnalysis(pvdo, incomingUnit))];
+            PVDOs = [.. Data.RawPvdoTables.Select(pvdo => new PVDOAnalysis(pvdo, incomingUnit))];
             foreach (var pvdo in PVDOs) pvdo.FitProperties();
 
             // SWOF
@@ -99,24 +88,24 @@ namespace ReservoirSimulator
             foreach (var swof in SWOFs) swof.FitProperties();
 
             // ROCK
-            cr = Data.RockCompressibility; 
+            cr = Data.RockCompressibility;
             Prefr = Utility.Convert(Data.RockReferencePressure, "Pressure", incomingUnit, Units.FIELD);
             Er = P => Exp(cr * (P - Prefr));
 
             // DENSITIES
-            γo0 = Utility.Convert(Data.SurfaceOilDensity, "Density", incomingUnit, Units.FIELD)/144;
-            γw0 = Utility.Convert(Data.SurfaceWaterDensity, "Density", incomingUnit, Units.FIELD)/144;
+            γo0 = Utility.Convert(Data.SurfaceOilDensity, "Density", incomingUnit, Units.FIELD) / 144;
+            γw0 = Utility.Convert(Data.SurfaceWaterDensity, "Density", incomingUnit, Units.FIELD) / 144;
 
             // REGION
             NumActiveGrids = Utility.SetAcitveGrids(Grids, Data.ActnumArray, Er);
             Utility.SetSWOF(Grids, Data.SatnumArray, SWOFs);
-            Utility.SetPVDO(Grids, Data.PvtnumArray, PVDOs, γo0); 
+            Utility.SetPVDO(Grids, Data.PvtnumArray, PVDOs, γo0);
             Utility.SetPVTW(Grids, Data.PvtnumArray, PVTWs, γw0);
 
             // TRANSMISSIBILITY
             Utility.BuildStructuredConnections(Grids, Nx, Ny, Nz);
             //Utility.ComputeFaceTransmissibility(Grids);
-            
+
 
             // 1. Build EQUIL Pressure-Depth Tables for every (EQUILNUM, PVTNUM) pair
             EQUILAnalysis[] EQUILs = [.. Data.RawEquilTables.Select(equil => new EQUILAnalysis(equil, incomingUnit))];
@@ -179,21 +168,19 @@ namespace ReservoirSimulator
             }
 
             // WELLS
-            Wells = [.. Data.Wells.Select(well => new Well<Vector4d>(well.Value) { Name = well.Key, Grids = Grids })];
+            Wells = [.. Data.Wells.Select(well => new Well<Vector4d>(well.Value, Nx, Ny, Nz, Grids, incomingUnit))];
+            NumWells = Wells.Count;
         }
-
-
         public void Initialize()
         {
             funcall = 0;
-            for (int m = 0; m < Ngrids; m++)
+            foreach(var grid in Grids)
             {
-                var grid = Grids[m];
                 if (!grid.isActive) continue;
 
-                int s = DATA.SatnumArray[m];
-                int e = DATA.EquinumArray[m];
-                int p = DATA.PvtnumArray[m];
+                int s = DATA.SatnumArray[grid.GlobalIndex];
+                int e = DATA.EquinumArray[grid.GlobalIndex];
+                int p = DATA.PvtnumArray[grid.GlobalIndex];
 
                 var swoftable = SWOFs[s].swofTable;
                 var equildata = EquilPVTCombinations[(e, p)];
@@ -246,9 +233,12 @@ namespace ReservoirSimulator
 
                 grid.ErSo_Bo_n = (Er_i * grid.So_n / Bo_i).Value;
                 grid.ErSw_Bw_n = (Er_i * grid.Sw_n / Bw_i).Value;
+                grid.SaveResult(po: grid.Po_n, pw: grid.Pw_n, so: grid.So_n, sw: grid.Sw_n);
             }
-        }
 
+            foreach(var well in Wells)
+                well.SaveResult(pwf: well.Pwf_n, qo: well.Qo_n, qw: well.Qw_n);
+        }
         void InitialGuess(double[] xs, double dt, bool isRetry = false, bool wellEventOccurred = false)
         {
             int indx = 0;
@@ -257,9 +247,8 @@ namespace ReservoirSimulator
             double omega = canExtrapolate ? Min(1.0, dt / (Time[n] - Time[n - 1])) : 0.0;
 
             // 1. Reservoir Grid Unknowns (Po, Sw)
-            for (int m = 0; m < Ngrids; m++)
+            foreach (var mgrid in Grids)
             {
-                var mgrid = Grids[m];
                 if (!mgrid.isActive) continue;
 
                 double poGuess = mgrid.Po_n;
@@ -270,60 +259,58 @@ namespace ReservoirSimulator
                 xs[indx++] = mgrid.Sw_n;         // Sw index
             }
 
-            // 2. Active Well Unknowns
-            for (int i = 0; i < Nwells; i++)
+            // 2. Well Unknowns (Pwf, Q) for all wells
+            foreach (var well in Wells)
             {
-                var well = Wells[i];
-                if (!well.isActive) continue;
+                double pGuess = well.Pwf_n;
+                double qGuess = well.IsWaterTarget ? well.Qw_n
+                              : well.IsOilTarget ? well.Qo_n
+                              : well.IsGasTarget ? well.Qg_n
+                                                   : well.Ql_n;
 
-                switch (well.ConstraintType)
+                if (well.isStopped)
+                    qGuess = 0.0;
+                else if (well.WellType == WellType.PRODUCER && well.CurrentProducerControl is { } prod)
                 {
-                    case ConstraintType.MIN_BHP:
-                        xs[indx++] = well.CurrentControl.MinBhpLimit;
-                        xs[indx++] = well.IsWaterTarget ? well.Qw_n
-                                   : well.IsOilTarget ? well.Qo_n
-                                   : (well.Qo_n + well.Qw_n);
-                        break;
-
-                    case ConstraintType.MAX_BHP:
-                        xs[indx++] = well.CurrentControl.MaxBhpLimit;
-                        xs[indx++] = well.Qw_n;
-                        break;
-
-                    case ConstraintType.RATE:
-                        xs[indx++] = well.Pwf_n;
-                        xs[indx++] = well.CurrentControl.TargetRate;
-                        break;
-
-                    case ConstraintType.GRATE:
-                        xs[indx++] = well.Pwf_n;
-                        xs[indx++] = well.CurrentControl.GasRateTarget;
-                        break;
-
-                    case ConstraintType.ORATE:
-                        xs[indx++] = well.Pwf_n;
-                        xs[indx++] = well.CurrentControl.OilRateTarget;
-                        break;
-
-                    case ConstraintType.WRATE:
-                        xs[indx++] = well.Pwf_n;
-                        xs[indx++] = well.CurrentControl.WaterRateTarget;
-                        break;
-
-                    case ConstraintType.LRATE:
-                        xs[indx++] = well.Pwf_n;
-                        xs[indx++] = well.CurrentControl.LiquidRateTarget;
-                        break;
-
-                    default:
-                        throw new InvalidOperationException($"Unhandled well constraint type: {well.ConstraintType}");
+                    switch (well.ConstraintType)
+                    {
+                        case ConstraintType.MIN_BHP:
+                            pGuess = prod.MinBhpLimit;
+                            break;
+                        case ConstraintType.ORATE:
+                            qGuess = prod.OilRateTarget;
+                            break;
+                        case ConstraintType.WRATE:
+                            qGuess = prod.WaterRateTarget;
+                            break;
+                        case ConstraintType.GRATE:
+                            qGuess = prod.GasRateTarget;
+                            break;
+                        case ConstraintType.LRATE:
+                            qGuess = prod.LiquidRateTarget;
+                            break;
+                    }
                 }
+                else if (well.WellType == WellType.INJECTOR && well.CurrentInjectorControl is { } inj)
+                {
+                    switch (well.ConstraintType)
+                    {
+                        case ConstraintType.MAX_BHP:
+                            pGuess = inj.MaxBhpLimit;
+                            break;
+                        case ConstraintType.RATE:
+                            qGuess = inj.TargetRate;
+                            break;
+                    }
+                }
+
+                xs[indx++] = pGuess;
+                xs[indx++] = qGuess;
             }
         }
-
         public static (double maxPd, double maxSd) ApplyPrimaryVariableUpdate(
-            double[] x, double[] dx, int numActiveGrids, int numActiveWells,
-            double dPmax = 200.0,   // max allowable pressure change per Newton step [psi]
+            double[] x, double[] dx, int numActiveGrids, int numWells,
+            double dPmax = 500.0,   // max allowable pressure change per Newton step [psi]
             double dSmax = 0.20)    // max allowable saturation change per Newton step [-]
         {
             double maxPd = 0.0;
@@ -361,37 +348,26 @@ namespace ReservoirSimulator
 
             // 2. Well variables update (starts right after active grid DOFs)
             int wellStart = 2 * numActiveGrids;
-            for (int w = 0; w < numActiveWells; w++)
+            for (int w = 0; w < numWells; w++)
             {
                 int idxP = wellStart + 2 * w + 0; // Well pressure [psia]
                 int idxQ = wellStart + 2 * w + 1; // Well rate [stb/day]
-
-                double dp = Clamp(dx[idxP], -dPmax, dPmax);
-                double pNew = Max(14.7, x[idxP] - dp);
-                maxPd = Max(maxPd, Abs(pNew - x[idxP]));
-                x[idxP] = pNew;
-
-                x[idxQ] -= dx[idxQ]; // Unclamped rate update (allows negative injection rates)
+                double dP = dx[idxP], dQ = dx[idxQ];
+                x[idxP] -= dP; // 
+                x[idxQ] -= dQ; // 
             }
 
             return (maxPd, maxSd);
         }
 
-        public void Simulate2Phase(double[] ResultTime)
+        public void Simulate(double[] ResultTime)
         {
-            Initialize();
+            int cores = Environment.ProcessorCount, chunkSize = Ngrids / cores;
 
-            int cores = Environment.ProcessorCount;
-            int chunkSize = Ngrids / cores;
-
-            int totalDofs = 0;
-            int[] col_index = null, row_ptr = null;
-            double[] JacValues = null, Res = null, dx = null, xs = null ;
-
-            CellOffsets[] cellOffsets = null;
-            FaceOffsets[][][] faceOffsets = null;
-            WellOffsets[] wellOffsets = null;
-            MklPardisoSolver solver = null;
+            (int totalDofs, int[] col_index, int[] row_ptr, double[] JacValues) = ReservoirJacobian.Create(2, Grids, Wells);
+            ReservoirJacobian.PrecomputeOffsets(2, row_ptr, col_index, Grids, Wells);
+            double[] xs = new double[totalDofs], Res = new double[totalDofs], dx = new double[totalDofs];
+            MklPardisoSolver solver = new MklPardisoSolver(totalDofs, row_ptr, col_index); 
 
             funcall = 0;
             double Residual(double[] xnp1, double dt)
@@ -424,12 +400,12 @@ namespace ReservoirSimulator
                         var Po_i = new ADiff<Vector4d>(xnp1[2 * i + 0], new(1, 0, 0, 0));
                         var Sw_i = new ADiff<Vector4d>(xnp1[2 * i + 1], new(0, 1, 0, 0));
                         var Pw_i = Po_i - mgrid.Pcow(Sw_i);
-                        var So_i = 1.0 - Sw_i; 
+                        var So_i = 1.0 - Sw_i;
 
                         var meanP = So_i * Po_i + Sw_i * Pw_i;
                         var Er_i = mgrid.Er(meanP);
-                        var Bo_i = mgrid.Bo(Po_i); 
-                        var Bw_i = mgrid.Bw(Pw_i); 
+                        var Bo_i = mgrid.Bo(Po_i);
+                        var Bw_i = mgrid.Bw(Pw_i);
                         var Kro_i = mgrid.Krow(Sw_i);
                         var Krw_i = mgrid.Krw(Sw_i);
                         var μo_i = mgrid.μo(Po_i);
@@ -452,7 +428,7 @@ namespace ReservoirSimulator
                         Res[row_w] += ResWater.Value;
 
                         // Direct write to Accumulation Jacobian (Block i, i)
-                        ref readonly var cOff = ref cellOffsets[i];
+                        var cOff = mgrid.Offset;
                         JacValues[cOff.Diag[0]] += ResOil.Derivative[0];   // row_o, col_p_i
                         JacValues[cOff.Diag[1]] += ResOil.Derivative[1];   // row_o, col_sw_i
                         JacValues[cOff.Diag[2]] += ResWater.Derivative[0]; // row_w, col_p_i
@@ -510,13 +486,13 @@ namespace ReservoirSimulator
                                 Res[row_w] += FluxWater.Value;
 
                                 // Direct write to Jacobian using precomputed face offsets
-                                ref readonly var fOff = ref faceOffsets[m][f][c];
+                                var fOff = face.Offset[c];
 
                                 // Block (i, i) -> Derivatives wrt Cell i variables (slots 0 and 1)
-                                JacValues[fOff.Self[0]] += FluxOil.Derivative[0];   // row_o, col_p_i
-                                JacValues[fOff.Self[1]] += FluxOil.Derivative[1];   // row_o, col_sw_i
-                                JacValues[fOff.Self[2]] += FluxWater.Derivative[0]; // row_w, col_p_i
-                                JacValues[fOff.Self[3]] += FluxWater.Derivative[1]; // row_w, col_sw_i
+                                JacValues[cOff.Diag[0]] += FluxOil.Derivative[0];   // row_o, col_p_i
+                                JacValues[cOff.Diag[1]] += FluxOil.Derivative[1];   // row_o, col_sw_i
+                                JacValues[cOff.Diag[2]] += FluxWater.Derivative[0]; // row_w, col_p_i
+                                JacValues[cOff.Diag[3]] += FluxWater.Derivative[1]; // row_w, col_sw_i
 
                                 // Block (i, j) -> Derivatives wrt Neighbor j variables (slots 2 and 3)
                                 JacValues[fOff.Neighbor[0]] += FluxOil.Derivative[2];   // row_o, col_p_j
@@ -531,18 +507,25 @@ namespace ReservoirSimulator
                 // =========================================================================
                 // 2. Sequential Well System Assembly & Direct Memory Updates
                 // =========================================================================
-                foreach (var well in Wells)
+                
+                for (int wellidx = 0; wellidx < NumWells; wellidx++)
                 {
-                    if (!well.isActive) continue;
-                    ref readonly var wOff = ref wellOffsets[well.ActiveIndex];
+                    var well = Wells[wellidx];
+                    var wOff = well.Offset;
+                    if (!well.isActive)
+                    {
+                        JacValues[wOff.RowFlow_dPwell] += 1;
+                        JacValues[wOff.RowConst_dQwell] += 1;
+                        continue; 
+                    }
+                   
 
-                    int row_p = 2 * NumActiveGrids + 2 * well.ActiveIndex + 0; // Constraint equation
-                    int row_q = 2 * NumActiveGrids + 2 * well.ActiveIndex + 1; // Rate definition equation
+                    int rowflow = 2 * NumActiveGrids + 2 * wellidx + 0;  // Rate definition equation
+                    int rowconst = 2 * NumActiveGrids + 2 * wellidx + 1; // Constraint equation
 
-                    var pwell = new ADiff<Vector4d>(xnp1[row_p], new(1, 0, 0, 0));
-                    var qwell = new ADiff<Vector4d>(xnp1[row_q], new(0, 1, 0, 0));
+                    var pwell = new ADiff<Vector4d>(xnp1[rowflow], new(1, 0, 0, 0));
+                    var qwell = new ADiff<Vector4d>(xnp1[rowconst], new(0, 1, 0, 0));
 
-                    double Zref = well.ZControl;
                     well.Qo = default;
                     well.Qw = default;
 
@@ -553,25 +536,26 @@ namespace ReservoirSimulator
                     switch (well.WellType)
                     {
                         case WellType.PRODUCER:
+
                             {
                                 for (int p = 0; p < perfCount; p++)
                                 {
                                     int m = well.PerfNatIndex[p];
                                     var mgrid = Grids[m];
-                                    if (!mgrid.isActive) continue;
+                                    if (!well.PerfIsOpen[p] || !mgrid.isActive) continue;
 
                                     int i = mgrid.ActiveIndex;
-                                    int indx1 = 2 * i + 0;
-                                    int indx2 = 2 * i + 1;
+                                    int row_o = 2 * i + 0;
+                                    int row_w = 2 * i + 1;
 
-                                    var Po_m = new ADiff<Vector4d>(xnp1[indx1], new(0, 0, 1, 0));
-                                    var Sw_m = new ADiff<Vector4d>(xnp1[indx2], new(0, 0, 0, 1));
+                                    var Po_m = new ADiff<Vector4d>(xnp1[row_o], new(0, 0, 1, 0));
+                                    var Sw_m = new ADiff<Vector4d>(xnp1[row_w], new(0, 0, 0, 1));
                                     var Pw_m = Po_m - mgrid.Pcow(Sw_m);
                                     var So_m = 1.0 - Sw_m;
 
-                                    var Bo_m = mgrid.Bo(Po_m); 
+                                    var Bo_m = mgrid.Bo(Po_m);
                                     var Bw_m = mgrid.Bw(Pw_m);
-                                    var Kro_m = mgrid.Krow(So_m);
+                                    var Kro_m = mgrid.Krow(Sw_m);
                                     var Krw_m = mgrid.Krw(Sw_m);
                                     var μo_m = mgrid.μo(Po_m);
                                     var μw_m = mgrid.μw(Pw_m);
@@ -583,7 +567,7 @@ namespace ReservoirSimulator
 
                                     var go_avg = 0.5 * (γo_m + γo_well);
                                     var gw_avg = 0.5 * (γw_m + γw_well);
-                                    double dz = mgrid.Center.Z - Zref;
+                                    double dz = mgrid.Center.Z - well.Zref;
 
                                     var DΦo = Po_m - pwell - go_avg * dz;
                                     var DΦw = Pw_m - pwell - gw_avg * dz;
@@ -594,17 +578,15 @@ namespace ReservoirSimulator
                                     var rate_oil = WIo * DΦo;
                                     var rate_water = WIw * DΦw;
 
-                                    well.Qo += rate_oil;
-                                    well.Qw += rate_water;
 
                                     // Reservoir residuals & Jacobian entries (outflow is +rate * dt)
-                                    Res[indx1] += rate_oil.Value * dt;
-                                    Res[indx2] += rate_water.Value * dt;
+                                    Res[row_o] += rate_oil.Value * dt;
+                                    Res[row_w] += rate_water.Value * dt;
 
                                     JacValues[wOff.Rm_dPwell[p][0]] += rate_oil.Derivative[0] * dt;
                                     JacValues[wOff.Rm_dPwell[p][1]] += rate_water.Derivative[0] * dt;
 
-                                    ref readonly var cOff = ref cellOffsets[i];
+                                    var cOff = mgrid.Offset;
                                     JacValues[cOff.Diag[0]] += rate_oil.Derivative[2] * dt;
                                     JacValues[cOff.Diag[1]] += rate_oil.Derivative[3] * dt;
                                     JacValues[cOff.Diag[2]] += rate_water.Derivative[2] * dt;
@@ -615,28 +597,33 @@ namespace ReservoirSimulator
                                                     : isOilTarget ? rate_oil
                                                     : rate_oil + rate_water;
 
-                                    JacValues[wOff.RowQ_dGrid[p][0]] += -perfRate.Derivative[2];
-                                    JacValues[wOff.RowQ_dGrid[p][1]] += -perfRate.Derivative[3];
+                                    JacValues[wOff.RowFlow_dGrid[p][0]] -= perfRate.Derivative[2];
+                                    JacValues[wOff.RowFlow_dGrid[p][1]] -= perfRate.Derivative[3];
+
+                                    well.Qo += rate_oil;  well.Qw += rate_water;
                                 }
 
                                 // Close Row Q using matching accumulated well rate
-                                ADiff<Vector4d> prodRate = isWaterTarget ? well.Qw
+                                ADiff<Vector4d> wellRate = isWaterTarget ? well.Qw
                                                          : isOilTarget ? well.Qo
                                                          : well.Ql;
 
-                                Res[row_q] += qwell.Value - prodRate.Value;
-                                JacValues[wOff.RowQ_Pwell] += -prodRate.Derivative[0];
-                                JacValues[wOff.RowQ_Qwell] += 1.0;
+                                ADiff<Vector4d> RateRes = qwell - wellRate;
+                                Res[rowflow] += RateRes.Value;
+                                JacValues[wOff.RowFlow_dPwell] += RateRes.Derivative[0];
+                                JacValues[wOff.RowFlow_dQwell] += RateRes.Derivative[1];
                                 break;
                             }
 
+
                         case WellType.INJECTOR:
+
                             {
                                 for (int p = 0; p < perfCount; p++)
                                 {
                                     int m = well.PerfNatIndex[p];
                                     var mgrid = Grids[m];
-                                    if (!mgrid.isActive) continue;
+                                    if (!well.PerfIsOpen[p] || !mgrid.isActive) continue;
 
                                     int i = mgrid.ActiveIndex;
                                     int indx1 = 2 * i + 0;
@@ -653,42 +640,49 @@ namespace ReservoirSimulator
                                     var γw_m = mgrid.γw(Pw_m);
 
                                     var gw_avg = 0.5 * (γw_m + γw_well);
-                                    double dz = mgrid.Center.Z - Zref;
+                                    double dz = mgrid.Center.Z - well.Zref;
 
-                                    var DΦw = pwell - Pw_m + gw_avg * dz;
+                                    var DΦw = Pw_m - pwell - gw_avg * dz;
                                     // Phase-weighted total mobility in perforated cell
-                                    var lambdaTotal =  1.0 / (μw_m * Bw_m);
+                                    var lambdaTotal = mgrid.Krw(1) / (μw_m * Bw_m);
                                     var WIw = mgrid.WI * lambdaTotal;
                                     var rate_water = WIw * DΦw;
 
+                                    // Reservoir water equation (injection is inflow: rate * dt)
+                                    Res[indx2] += rate_water.Value * dt;
+
+                                    JacValues[wOff.Rm_dPwell[p][1]] += rate_water.Derivative[0] * dt;
+
+                                    var cOff = mgrid.Offset;
+                                    JacValues[cOff.Diag[2]] += rate_water.Derivative[2] * dt;
+                                    JacValues[cOff.Diag[3]] += rate_water.Derivative[3] * dt;
+
+                                    JacValues[wOff.RowFlow_dGrid[p][0]] -= rate_water.Derivative[2];
+                                    JacValues[wOff.RowFlow_dGrid[p][1]] -= rate_water.Derivative[3];
+
                                     well.Qw += rate_water;
-
-                                    // Reservoir water equation (injection is inflow: -rate * dt)
-                                    Res[indx2] += -rate_water.Value * dt;
-
-                                    JacValues[wOff.Rm_dPwell[p][1]] += -rate_water.Derivative[0] * dt;
-
-                                    ref readonly var cOff = ref cellOffsets[i];
-                                    JacValues[cOff.Diag[2]] += -rate_water.Derivative[2] * dt;
-                                    JacValues[cOff.Diag[3]] += -rate_water.Derivative[3] * dt;
-
-                                    JacValues[wOff.RowQ_dGrid[p][0]] += -rate_water.Derivative[2];
-                                    JacValues[wOff.RowQ_dGrid[p][1]] += -rate_water.Derivative[3];
                                 }
 
                                 // Close Row Q using well.Qw
-                                Res[row_q] += qwell.Value - well.Qw.Value;
-                                JacValues[wOff.RowQ_Pwell] += -well.Qw.Derivative[0];
-                                JacValues[wOff.RowQ_Qwell] += 1.0;
+                                ADiff<Vector4d> RateRes = qwell - well.Qw;
+                                Res[rowflow] += RateRes.Value;
+                                JacValues[wOff.RowFlow_dPwell] += RateRes.Derivative[0];
+                                JacValues[wOff.RowFlow_dQwell] += RateRes.Derivative[1];
                                 break;
                             }
+
                     }
 
+                    well.Qw_np1 = well.Qw.Value;
+                    well.Qo_np1 = well.Qo.Value;
+                    well.Ql_np1 = well.Ql.Value;
+                    well.Pwf_np1 = pwell.Value;
                     // Close the Well Constraint Equation (Row p)
                     ADiff<Vector4d> wellConstraint = well.Constraint(pwell, qwell);
-                    Res[row_p] += wellConstraint.Value;
-                    JacValues[wOff.RowP_Pwell] += wellConstraint.Derivative[0];
-                    JacValues[wOff.RowP_Qwell] += wellConstraint.Derivative[1];
+                    Res[rowconst] += wellConstraint.Value;
+                    JacValues[wOff.RowConst_dPwell] += wellConstraint.Derivative[0];
+                    JacValues[wOff.RowConst_dQwell] += wellConstraint.Derivative[1];
+
                 }
 
                 // =========================================================================
@@ -712,20 +706,54 @@ namespace ReservoirSimulator
 
                 // If you also have explicit well BHP equations at rows [2*NumActiveGrids .. totalRows-1]:
                 int wellOffset = 2 * NumActiveGrids;
-                foreach (var well in Wells)
+                for (int wellidx = 0; wellidx < NumWells; wellidx++)
                 {
+                    var well = Wells[wellidx];
                     if (!well.isActive) continue;
 
-                    int row0 = wellOffset + 2 * well.ActiveIndex + 0;
-                    int row1 = wellOffset + 2 * well.ActiveIndex + 1;
+                    bool isProducer = well.WellType == WellType.PRODUCER;
+                    well.Zref = isProducer ? well.HighestZref : well.LowestZref;
 
-                    // Equation 0: Wellbore rate balance / inflow equation [stb/day or rb/day]
-                    double rateScale = Max(1.0, Abs(well.CurrentControl.TargetRate));
+                    int row0 = wellOffset + 2 * wellidx + 0;
+                    int row1 = wellOffset + 2 * wellidx + 1;
+
+                    // Resolve active rate target & BHP limit from the role-specific control record
+                    double targetRate = 0.0;
+                    double bhpLimit = 14.7;
+
+                    if (!well.isStopped)
+                    {
+                        if (isProducer && well.CurrentProducerControl is { } prod)
+                        {
+                            bhpLimit = prod.MinBhpLimit;
+                            targetRate = well.ConstraintType switch
+                            {
+                                ConstraintType.ORATE => prod.OilRateTarget,
+                                ConstraintType.WRATE => prod.WaterRateTarget,
+                                ConstraintType.GRATE => prod.GasRateTarget,
+                                ConstraintType.LRATE => prod.LiquidRateTarget,
+                                _ => Max(prod.OilRateTarget, Max(prod.WaterRateTarget, prod.LiquidRateTarget))
+                            };
+                        }
+                        else if (!isProducer && well.CurrentInjectorControl is { } inj)
+                        {
+                            bhpLimit = inj.MaxBhpLimit;
+                            targetRate = inj.TargetRate;
+                        }
+                    }
+
+                    // Current flowing rate provides a physical scale when under BHP control or STOP
+                    double currentFlowRate = Abs(well.Qo.Value) + Abs(well.Qw.Value);
+                    double rateScale = Max(1.0, Max(Abs(targetRate), currentFlowRate));
+
+                    // Equation 0: Wellbore rate balance / inflow equation [stb/day] -> normalized
                     double err0 = Abs(Res[row0]) / rateScale;
 
-                    // Equation 1: Active control constraint (Rate [stb/day] or BHP [psi])
-                    double ctrlScale = well.ConstraintType is ConstraintType.MAX_BHP or ConstraintType.MIN_BHP 
-                        ? Max(1.0, Abs(well.CurrentControl.MaxBhpLimit)) : Max(1.0, Abs(well.CurrentControl.TargetRate));
+                    // Equation 1: Active control constraint (BHP [psi] vs Rate [stb/day]) -> normalized
+                    double ctrlScale = well.ConstraintType is ConstraintType.MAX_BHP or ConstraintType.MIN_BHP
+                        ? Max(14.7, Abs(bhpLimit))
+                        : rateScale;
+
                     double err1 = Abs(Res[row1]) / ctrlScale;
 
                     if (err0 > MaxCNV) MaxCNV = err0;
@@ -738,10 +766,11 @@ namespace ReservoirSimulator
 
             double t = 0.0, dt = 0.1, dtCarry = 0.1;
             DateTime startDate = DATA.StartDate, currentSimDate;
-            List<DateTime> Interval = [startDate, .. ResultTime.Select(time => startDate.AddDays(time))];
-            foreach (var well in Wells)
-                Interval.AddRange(well.GetEventTimes());
-            Interval = [.. Interval.Distinct().OrderBy(x => x)];
+            List<DateTime> Interval = [.. new DateTime[] { startDate }
+                                .Concat(Wells.SelectMany(well => well.GetEventTimes().Select(date=>date.AddSeconds(-1))))
+                                .Concat(ResultTime.Select(t => startDate.AddDays(t).AddSeconds(-1)))
+                                .Distinct()
+                                .Order()];
 
             Console.WriteLine($"""
                 Total Grids = {Ngrids}, Active Grids = {NumActiveGrids}
@@ -750,8 +779,7 @@ namespace ReservoirSimulator
                 """);
 
             double L = 0, tnp1, rnorm = 0;
-            bool staterejected = false, isComplete;
-            int NumActiveWells = 0;
+            bool tryingnewtimestep = true, isComplete;
             Time = [t];
 
             for (int i = 1; i < Interval.Count; i++)
@@ -769,79 +797,58 @@ namespace ReservoirSimulator
                     currentSimDate = startDate.AddDays(tnp1);
                     Console.WriteLine($"\n[Info] Simulation Time: {tnp1:F3} days | Current Date: {currentSimDate:yyyy-MM-dd} | dt: {dt:F4} d");
 
-                    if (!staterejected)
+                    if (tryingnewtimestep)
                     {
-                        NumActiveWells = 0;
                         foreach (var well in Wells)
-                        {
                             well.UpdateControl(currentSimDate);
-                            if (well.isActive) well.ActiveIndex = NumActiveWells++;
-                        }
 
                         foreach (var well in Wells)
                             well.UpdateCompletion(currentSimDate);
-
-                        // Rebuild CSR and run PARDISO symbolic factorization ONLY when active wells or completions change
-                        if (Wells.Any(well => well.ActiveStatusChanged) || Wells.Any(well => well.CompletionChanged))
-                        {
-                            Console.WriteLine($"[Info] Number of Active Wells: {NumActiveWells}");
-                            Console.WriteLine($"[Info] Well Completion/Active Status Changed at t = {tnp1:F3} days -> Rebuilding CSR & Symbolic Factorization");
-                            solver?.Dispose(); // <-- CRITICAL: triggers PARDISO phase = -1 to free native L/U buffers!
-                            solver = null;
-                            (totalDofs, col_index, row_ptr, JacValues) = ReservoirJacobian.Create(2, Grids, Wells);
-                            (cellOffsets, faceOffsets, wellOffsets) = ReservoirJacobian.PrecomputeOffsets(2, row_ptr, col_index, Grids, Wells);
-                            solver = new MklPardisoSolver(totalDofs, row_ptr, col_index);
-                            xs = new double[totalDofs];
-                            Res = new double[totalDofs];
-                            dx = new double[totalDofs];
-                        }
                     }
 
                     // Prepare initial guess x^(0) from converged state n
                     InitialGuess(xs, dt);
-                    staterejected = false;
 
                     Console.WriteLine($"""
-                        Time: {tnp1:E4} days
                          iter |   Residual Norm
                         ------+------------------
                         """);
-
                     int iter;
                     bool isConverged = false;
-                    rnorm = Residual(xs, dt);
-                    double prevRnorm = rnorm;
+                    double prevRnorm = double.PositiveInfinity;
+                    double maxDPo = double.PositiveInfinity;
+                    double maxDSw = double.PositiveInfinity;
 
-                    for (iter = 1; iter < 10; iter++)
+                    for (iter = 0; iter < 10; iter++)
                     {
-                        // Direct solve via MKL PARDISO: J * dx = Res
-                        solver.Solve(JacValues, Res, dx);
-
-                        // Update primary variables: x^{k+1} = x^k - dx
-                        (double maxDPo, double maxDSw) = ApplyPrimaryVariableUpdate(xs, dx, NumActiveGrids, NumActiveWells);
                         rnorm = Residual(xs, dt);
-
                         Console.WriteLine($"  {iter,2}  |  {rnorm:E4}");
 
                         // Early exit if Newton diverges or hits NaN
                         if (double.IsNaN(rnorm) || (iter > 2 && rnorm > 10.0 * prevRnorm))
                             break;
-                        prevRnorm = rnorm;
 
-                        // Converged when normalized residual AND state step are both within tolerance
-                        if (rnorm < 1e-6 && maxDSw < 1e-4 && maxDPo < 1e-2)
+                        // Converged at current xs (skip step-size requirement on iter 0 only if desired, or require iter > 0)
+                        if (rnorm < 1e-6 && (iter == 0 || (maxDSw < 1e-4 && maxDPo < 1e-2)))
                         {
                             isConverged = true;
                             break;
                         }
+
+                        prevRnorm = rnorm;
+
+                        // Direct solve via MKL PARDISO: J * dx = Res
+                        solver.Solve(JacValues, Res, dx);
+
+                        // Update primary variables: x^{k+1} = x^k - dx
+                        (maxDPo, maxDSw) = ApplyPrimaryVariableUpdate(xs, dx, NumActiveGrids, NumWells);
                     }
 
                     // Cut dt on Newton non-convergence
                     if (!isConverged)
                     {
-                        dtCarry = 0.5 * dt;
+                        dtCarry = 0.5 * dt; tryingnewtimestep = true;
                         if (dtCarry < 1e-12) throw new Exception("Time step is too small");
-                        staterejected = true;
                         Console.WriteLine("""
                             ============================
                             Rejected (Non-Convergence)
@@ -852,57 +859,65 @@ namespace ReservoirSimulator
 
                     // Validate maximum per-step state changes
                     var (maxDP, maxDS, i_p, i_s) = CheckSolution(xs);
-                    if (maxDP > 100 || maxDS > 0.15)
+                    if (maxDP > 500 || maxDS > 0.2)
                     {
-                        int j = maxDP > 100 ? i_p : i_s;
-                        double limit = maxDP > 100 ? 100 : 0.15;
-                        double change = maxDP > 100 ? maxDP : maxDS;
+                        int j = maxDP > 500 ? i_p : i_s;
+                        double limit = maxDP > 500 ? 500 : 0.2;
+                        double change = maxDP > 500 ? maxDP : maxDS;
                         Console.ForegroundColor = ConsoleColor.Yellow;
                         Console.WriteLine($"\n[Warning] Time Step Rejected: State Change Limit Exceeded.");
                         Console.ResetColor();
                         Console.WriteLine($"    ↳ Location       : Cell Index {j}");
-                        Console.WriteLine($"    ↳ Violation      : {(maxDP > 100 ? "ΔP" : "ΔS")} = {change:F4} (Max Allowed: {limit:F4})");
+                        Console.WriteLine($"    ↳ Violation      : {(maxDP > 500 ? "ΔP" : "ΔS")} = {change:F4} (Max Allowed: {limit:F4})");
                         Console.WriteLine($"    ↳ Current State  : P = {Grids[j].Po_n:F1} psi | Sw = {Grids[j].Sw_n:F4}");
                         Console.WriteLine($"    ↳ Attempted State: P = {Grids[j].Po_np1:F1} psi | Sw = {Grids[j].Sw_np1:F4}");
                         Console.WriteLine($"    ↳ Solver Action  : Rolling back to t = {t:F3} days.");
                         Console.WriteLine($"    ↳ Time-Step Chop : Reducing Δt from {dt:F2} to {0.5 * dt:F2} days (Factor: 0.5).\n");
-                        dtCarry = 0.5 * dt;
-                        staterejected = true;
+                        dtCarry = 0.5 * dt; tryingnewtimestep = true;
                         continue;
                     }
 
                     // Validate Well BHP constraints (reuses existing PARDISO factorization on constraint switch)
                     foreach (var well in Wells)
                     {
-                        if (!well.isActive) continue;
+                        if (!well.isActive || well.isStopped) continue;
 
                         if (well.WellType == WellType.PRODUCER &&
+                            well.CurrentProducerControl is { } prod &&
                             well.ConstraintType != ConstraintType.MIN_BHP &&
-                            well.Pwf < well.CurrentControl.MinBhpLimit)
+                            prod.MinBhpLimit > 0.0 &&
+                            well.Pwf.Value < (prod.MinBhpLimit - 1e-2))
                         {
                             well.ConstraintType = ConstraintType.MIN_BHP;
                             Console.WriteLine($"""
-                                ===============================================================
-                                Rejected (Minimum Pressure Violated) @ {well.Name}
-                                ===============================================================
-                                """);
-                            staterejected = true;
+                            ===============================================================
+                            Rejected (Minimum Pressure Violated: {well.Pwf.Value:F2} < {prod.MinBhpLimit:F2} psi) @ {well.Name}
+                            ===============================================================
+                            """);
+                            well.Control_is_Violated = true;
                         }
 
                         if (well.WellType == WellType.INJECTOR &&
+                            well.CurrentInjectorControl is { } inj &&
                             well.ConstraintType != ConstraintType.MAX_BHP &&
-                            well.Pwf > well.CurrentControl.MaxBhpLimit)
+                            inj.MaxBhpLimit > 0.0 &&
+                            well.Pwf.Value > (inj.MaxBhpLimit + 1e-2))
                         {
                             well.ConstraintType = ConstraintType.MAX_BHP;
                             Console.WriteLine($"""
-                                ================================================
-                                Rejected (Maximum Pressure Violated) @ {well.Name}
-                                ================================================
+                                ===============================================================
+                                Rejected (Maximum Pressure Violated: {well.Pwf.Value:F2} > {inj.MaxBhpLimit:F2} psi) @ {well.Name}
+                                ===============================================================
                                 """);
-                            staterejected = true;
+                            well.Control_is_Violated = true;
                         }
                     }
-                    if (staterejected) continue;
+                    if (Wells.Any(well => well.Control_is_Violated))
+                    { 
+                        foreach(var well in Wells)
+                            well.Control_is_Violated = false;
+                        continue;
+                    }
 
                     // Commit verified state n+1 -> n
                     t = tnp1;
@@ -918,10 +933,8 @@ namespace ReservoirSimulator
                     }
                     foreach (var well in Wells)
                     {
-                        if (!well.isActive) continue;
-                        well.Pwf_n = well.Pwf.Value;
-                        well.Qo_n = well.Qo.Value;
-                        well.Qw_n = well.Qw.Value;
+                        well.Pwf_n = well.Pwf_np1; well.Qo_n = well.Qo_np1;
+                        well.Ql_n = well.Ql_np1; well.Qw_n = well.Qw_np1;
                         well.SaveResult(pwf: well.Pwf_n, qo: well.Qo_n, qw: well.Qw_n);
                     }
 
@@ -929,11 +942,54 @@ namespace ReservoirSimulator
 
                     // Adaptive time-stepping update preserving pre-clamped dtCarry across milestones
                     double nextDt = dt;
-                    if (iter < 3) nextDt *= 1.25;
-                    if (iter > 7) nextDt *= 0.7;
+                    if (iter < 4) nextDt *= 1.25;
+                    if (iter > 8) nextDt *= 0.7;
 
                     dtCarry = hitMilestone ? Clamp(Max(dtCarry, nextDt), 1e-12, 100.0) : Clamp(nextDt, 1e-12, 100.0);
                 }
+            }
+        }
+
+        public static void ExportCsrToTriplets(int[] rowPtr, int[] colIndex, double[] values = null,
+            string filePath = "triplets.txt", bool oneBasedIndexing = true)
+        {
+            int numRows = rowPtr.Length - 1;
+            int indexOffset = oneBasedIndexing ? 1 : 0;
+
+            using (StreamWriter writer = new StreamWriter(filePath))
+            {
+                for (int row = 0; row < numRows; row++)
+                {
+                    for (int idx = rowPtr[row]; idx < rowPtr[row + 1]; idx++)
+                    {
+                        int r = row + indexOffset;
+                        int c = colIndex[idx] + indexOffset;
+
+                        // Use the actual value if provided; otherwise default to 1.0
+                        double val = (values != null) ? values[idx] : 1.0;
+
+                        // InvariantCulture ensures '.' is used as the decimal separator
+                        writer.WriteLine($"{r} {c} {val.ToString(CultureInfo.InvariantCulture)}");
+                    }
+                }
+            }
+        }
+
+        public void ExportResults(string outputDir)
+        {
+            //VTUExporter.WriteVtuBinaryOilWater(outputDir, "OilWater.vtu", Grids);
+            ExportWellVTK.ExportWells(outputDir, Grids, Wells);
+
+            var animatorExporter = new SimulationAnimatorExporter<Vector4d>(outputDir, Grids);
+            for (int n = 0; n < Time.Count; n++)
+                animatorExporter.WriteTimeStep(Time, Grids, n);
+
+
+            foreach (var well in Wells)
+            {
+                List<ColVec> vectors = [Time, well.PWF, well.QO, well.QW];
+                string filename = Path.Combine(outputDir, $"{well.Name}.txt");
+                SepalSolver.Math.WriteMatrix(vectors, filename);
             }
         }
     }

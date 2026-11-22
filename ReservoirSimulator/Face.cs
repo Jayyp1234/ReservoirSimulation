@@ -5,6 +5,7 @@ namespace ReservoirSimulator
 {
     public class Face
     {
+        public List<Offsets> Offset { get; set; } = [];
         public int GlobalGridIndex { get; set; }
         public List<int> GridIndices { get; set; } = [];
         public List<double> Transmissibility { get; set; } = [];
@@ -25,6 +26,22 @@ namespace ReservoirSimulator
             Vector3d cross = Vector3d.Cross(diagA, diagB);
 
             Area = 0.5 * Sqrt(Vector3d.Dot(cross, cross));
+        }
+
+        public readonly struct Offsets
+        {
+            public readonly int NeighborActiveIndex;
+            // Flattened indices into values[]:
+            // Block (i, i) sensitivities (slots 0 .. nc-1): [eq * nc + var]
+            public readonly int[] Self;
+            // Block (i, j) sensitivities (slots nc .. 2*nc-1): [eq * nc + var]
+            public readonly int[] Neighbor;
+
+            public Offsets(int nc, int neighborActiveIdx)
+            {
+                NeighborActiveIndex = neighborActiveIdx;
+                Neighbor = new int[nc * nc];
+            }
         }
     }
 }
