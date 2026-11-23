@@ -14,6 +14,7 @@ namespace ReservoirSimulator
         public bool isSaturated { get; set; } = true;
         public double NTG { get; set; }
         public double Porosity { get; set; } = 0;
+        public double PoreVolumeMultiplier { get; set; } = 1.0;   // MULTPV
         public Face[] Faces { get; set; } = [.. Enumerable.Range(0, 6).Select(i => new Face() { Direction = (FlowDirection)i })];
         public double PoreVolume { get; private set; } = 0;
         public double InvPoreVolume { get; private set; } = 0;
@@ -66,7 +67,7 @@ namespace ReservoirSimulator
             Faces[4].Corners = [Corners[0], Corners[3], Corners[2], Corners[1]];  // Top (-K)
             Faces[5].Corners = [Corners[4], Corners[5], Corners[6], Corners[7]];  // Bottom (+K)
 
-            PoreVolume = Utility.ComputeHexahedronVolume(this) * NTG * Porosity / beta;
+            PoreVolume = Utility.ComputeHexahedronVolume(this) * NTG * Porosity * PoreVolumeMultiplier / beta;
             InvPoreVolume = 1.0 / PoreVolume;
 
             foreach (var face in Faces)

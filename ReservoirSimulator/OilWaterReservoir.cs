@@ -72,8 +72,11 @@ namespace ReservoirSimulator
             Φ = [.. Data.PorosityArray];
             Kx = [.. Data.PermXArray]; Ky = [.. Data.PermYArray]; Kz = [.. Data.PermZArray];
 
-            Grids = Zcorn is not null ? Utility.ProcessGrid<Vector4d>(Nx, Ny, Nz, Coord, Zcorn, Φ, Kx, Ky, Kz) :
-                Utility.ProcessGrid<Vector4d>(Nx, Ny, Nz, Dx, Dy, Dz, zTop, Φ, Kx, Ky, Kz);
+            // NTG and MULTPV default to 1 for every cell (set at DIMENS); a wrong-sized array is ignored rather than misread
+            double[]? ntg = Data.NtgArray.Count == Ngrids ? Data.NtgArray.ToArray() : null;
+            double[]? multpv = Data.MultpvArray.Count == Ngrids ? Data.MultpvArray.ToArray() : null;
+            Grids = Zcorn is not null ? Utility.ProcessGrid<Vector4d>(Nx, Ny, Nz, Coord, Zcorn, Φ, Kx, Ky, Kz, ntg, multpv) :
+                Utility.ProcessGrid<Vector4d>(Nx, Ny, Nz, Dx, Dy, Dz, zTop, Φ, Kx, Ky, Kz, ntg, multpv);
 
             // Process PVTW and PVDO tables.
             PVTWs = [.. Data.RawPvtwTables.Select(pvtw => new PVTWAnalysis(pvtw, incomingUnit))];
@@ -97,8 +100,20 @@ namespace ReservoirSimulator
             γo0 = Utility.Convert(Data.SurfaceOilDensity, "Density", incomingUnit, Units.FIELD) / 144;
             γw0 = Utility.Convert(Data.SurfaceWaterDensity, "Density", incomingUnit, Units.FIELD) / 144;
 
+            // MINPV: cells holding less pore volume than the deck's minimum are made inactive, as in ECLIPSE.
+            // A copy of ACTNUM is changed, so the deck itself keeps what the user wrote.
+            List<int> actnum = [.. Data.ActnumArray];
+            if (Data.MinPoreVolume > 0)
+            {
+                double minPv = Utility.Convert(Data.MinPoreVolume, "Reservoir Volume", incomingUnit, Units.FIELD);
+                int removed = 0;
+                for (int m = 0; m < Ngrids; m++)
+                    if (actnum[m] > 0 && Grids[m].PoreVolume < minPv) { actnum[m] = 0; removed++; }
+                Console.WriteLine($"      [Grid] MINPV {Data.MinPoreVolume}: {removed} cell(s) with less pore volume made inactive.");
+            }
+
             // REGION
-            NumActiveGrids = Utility.SetAcitveGrids(Grids, Data.ActnumArray, Er);
+            NumActiveGrids = Utility.SetAcitveGrids(Grids, actnum, Er);
             Utility.SetSWOF(Grids, Data.SatnumArray, SWOFs);
             Utility.SetPVDO(Grids, Data.PvtnumArray, PVDOs, γo0);
             Utility.SetPVTW(Grids, Data.PvtnumArray, PVTWs, γw0);

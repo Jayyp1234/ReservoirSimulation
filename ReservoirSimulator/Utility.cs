@@ -32,6 +32,7 @@ namespace ReservoirSimulator
             ["Liquid Surface Rate"] = ["STB/day", "sm^3/day", "sm^3/day", "scc/hr"],
             ["Gas Surface Rate"] = ["Mscf/day", "sm^3/day", "sm^3/day", "scc/hr"],
             ["Reservoir Volume Rate"] = ["rb/day", "rm^3/day", "rm^3/day", "rcc/hr"],
+            ["Reservoir Volume"] = ["rb", "rm^3", "rm^3", "rcc"],
             ["Cumulative Liquid Volume"] = ["STB", "sm^3", "sm^3", "scc"],
             ["Cumulative Gas Volume"] = ["Mscf", "sm^3", "sm^3", "scc"],
             ["Oil Formation Volume Factor (Bo)"] = ["rb/STB", "rm^3/sm^3", "rm^3/sm^3", "rcc/scc"],
@@ -450,7 +451,7 @@ namespace ReservoirSimulator
         }
 
         internal static Grid<T>[] ProcessGrid<T>(int nx, int ny, int nz, double[] coord, double[] zcorn,
-            double[] Φ, double[] permx, double[] permy, double[] permz) where T : struct, IVectorND<T>
+            double[] Φ, double[] permx, double[] permy, double[] permz, double[]? ntg = null, double[]? multpv = null) where T : struct, IVectorND<T>
         {
             int nxny = nx * ny, ngrids = nxny * nz, nx2 = nx * 2, ny2 = ny * 2;
             Grid<T>[] Grids = new Grid<T>[ngrids];
@@ -460,7 +461,8 @@ namespace ReservoirSimulator
                 Grids[m] = new Grid<T>
                 {
                     IJKIndex = (i, j, k),
-                    NTG = 1.0,
+                    NTG = ntg?[m] ?? 1.0,
+                    PoreVolumeMultiplier = multpv?[m] ?? 1.0,
                     Porosity = Φ[m],
                     Corners = new Vector3d[8]
                 };
@@ -517,7 +519,7 @@ namespace ReservoirSimulator
             return Grids;
         }
         public static Grid<T>[] ProcessGrid<T>(int nx, int ny, int nz, double[] dx, double[] dy, double[] dz,
-            double[] zTop, double[] Φ, double[] permx, double[] permy, double[] permz) where T : struct, IVectorND<T>
+            double[] zTop, double[] Φ, double[] permx, double[] permy, double[] permz, double[]? ntg = null, double[]? multpv = null) where T : struct, IVectorND<T>
         {
             int nxny = nx * ny, ngrids = nxny * nz;
             Grid<T>[] Grids = new Grid<T>[ngrids];
@@ -534,7 +536,8 @@ namespace ReservoirSimulator
                         Grids[m] = new Grid<T>
                         {
                             IJKIndex = (i, j, k),
-                            NTG = 1.0,
+                            NTG = ntg?[m] ?? 1.0,
+                            PoreVolumeMultiplier = multpv?[m] ?? 1.0,
                             Porosity = Φ[m],
                             Corners = new Vector3d[8]
                         };
@@ -657,8 +660,7 @@ namespace ReservoirSimulator
                                 if (!c1.isActive || !c2.isActive) continue;
 
                                 double area = 0.5 * (c1.Faces[1].Area + c2.Faces[0].Area);
-                                double ntgFactor = 0.5 * (c1.NTG + c2.NTG);
-                                RegisterGridConnection(c1.Faces[1], c2.Faces[0], area * ntgFactor);
+                                RegisterGridConnection(c1.Faces[1], c2.Faces[0], area, c1.NTG, c2.NTG);
                             }
                         }
                     }
@@ -682,8 +684,7 @@ namespace ReservoirSimulator
                                 if (!c1.isActive || !c2.isActive) continue;
 
                                 double area = 0.5 * (c1.Faces[3].Area + c2.Faces[2].Area);
-                                double ntgFactor = 0.5 * (c1.NTG + c2.NTG);
-                                RegisterGridConnection(c1.Faces[3], c2.Faces[2], area * ntgFactor);
+                                RegisterGridConnection(c1.Faces[3], c2.Faces[2], area, c1.NTG, c2.NTG);
                             }
                         }
                     }
@@ -787,20 +788,21 @@ namespace ReservoirSimulator
                     double sharedArea = CalculateFaultIntersectionArea(fA, fB);
                     if (sharedArea > 1e-6)
                     {
-                        double areaEff = applyNTG ? sharedArea * 0.5 * (cA.NTG + cB.NTG) : sharedArea;
-                        RegisterGridConnection(fA, fB, areaEff);
+                        RegisterGridConnection(fA, fB, sharedArea, applyNTG ? cA.NTG : 1.0, applyNTG ? cB.NTG : 1.0);
                     }
                 }
             }
         }
 
-        static void RegisterGridConnection(Face f1, Face f2, double effectiveArea)
+        // NTG scales each cell's permeability before the harmonic average, as in ECLIPSE (X and Y connections only;
+        // vertical connections pass 1). Averaging the two NTGs instead overstates flow when they differ.
+        static void RegisterGridConnection(Face f1, Face f2, double effectiveArea, double ntg1 = 1.0, double ntg2 = 1.0)
         {
             if (effectiveArea <= 0.0 || f1.PerpendicularDistance2Center <= 0.0 || f2.PerpendicularDistance2Center <= 0.0)
                 return;
 
-            double x1 = f1.Permeability / f1.PerpendicularDistance2Center;
-            double x2 = f2.Permeability / f2.PerpendicularDistance2Center;
+            double x1 = f1.Permeability * ntg1 / f1.PerpendicularDistance2Center;
+            double x2 = f2.Permeability * ntg2 / f2.PerpendicularDistance2Center;
 
             double denom = x1 + x2;
             double T = (denom > 0.0) ? (alpha * effectiveArea * (x1 * x2) / denom) : 0.0;

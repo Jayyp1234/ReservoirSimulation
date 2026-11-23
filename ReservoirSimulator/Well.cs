@@ -152,7 +152,8 @@ namespace ReservoirSimulator
             double re = 0.28 * Hypot(Pow(ky / kx, 0.25) * DX, Pow(kx / ky, 0.25) * DY) /
                                (Pow(ky / kx, 0.25) + Pow(kx / ky, 0.25));
 
-            return _alphaWell * Sqrt(kx * ky) * DZ / (Log(re / radius) + skin);
+            // Net thickness DZ * NTG, as in ECLIPSE's default connection factor
+            return _alphaWell * Sqrt(kx * ky) * DZ * grid.NTG / (Log(re / radius) + skin);
         }
 
         public void SaveResult(double? pwf = null, double? qw = null,
