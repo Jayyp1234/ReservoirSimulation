@@ -278,23 +278,23 @@ namespace EclipseDeckReader
 
                         case "DENSITY":
                             var densities = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
-                            if (densities.Count >= 3)
-                            {
+                            if (densities.Count >= 1)
                                 deck.SurfaceOilDensity = densities[0];
+                            if (densities.Count >= 2)
                                 deck.SurfaceWaterDensity = densities[1];
+                            if (densities.Count >= 3)
                                 deck.SurfaceGasDensity = densities[2];
-                                Console.WriteLine($"      [Data] DENSITY: Loaded Surface Baselines -> Oil: {deck.SurfaceOilDensity:F2} | Water: {deck.SurfaceWaterDensity:F2} | Gas: {deck.SurfaceGasDensity:F4}");
-                            }
+                            Console.WriteLine($"      [Data] DENSITY: Loaded Surface Baselines -> Oil: {deck.SurfaceOilDensity:F2} | Water: {deck.SurfaceWaterDensity:F2} | Gas: {deck.SurfaceGasDensity:F4}");
+                            
                             break;
 
                         case "ROCK":
                             var rockProps = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
-                            if (rockProps.Count >= 2)
-                            {
+                            if (rockProps.Count >= 1)
                                 deck.RockReferencePressure = rockProps[0];
+                            if (rockProps.Count >= 2)
                                 deck.RockCompressibility = rockProps[1];
-                                Console.WriteLine($"      [Data] ROCK: Mechanical Properties -> Ref Pressure: {deck.RockReferencePressure:F2} | Compressibility: {deck.RockCompressibility:E4}");
-                            }
+                            Console.WriteLine($"      [Data] ROCK: Mechanical Properties -> Ref Pressure: {deck.RockReferencePressure:F2} | Compressibility: {deck.RockCompressibility:E4}");
                             break;
 
                         case "FAULTS":
@@ -1212,7 +1212,7 @@ namespace EclipseDeckReader
                 string rawFace = tokens[index + 7].Content.ToString().Trim('\'').Trim('"');
                 char face = rawFace.Length > 0 ? rawFace[0] : 'X';
 
-                faults[name] = new FaultRecord { FaultName = name, IStart = i1, IEnd = i2, JStart = j1, JEnd = j2, KStart = k1, KEnd = k2, Face = face };
+                faults[name] = new FaultRecord { IStart = i1, IEnd = i2, JStart = j1, JEnd = j2, KStart = k1, KEnd = k2, Face = face };
                 linesRead++;
                 index += 8;
             }

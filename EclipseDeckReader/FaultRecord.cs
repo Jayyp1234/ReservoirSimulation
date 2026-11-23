@@ -5,7 +5,6 @@
 /// </summary>
 public sealed class FaultRecord
 {
-    public string FaultName { get; set; } = string.Empty;
 
     // Face boundaries: I1-I2, J1-J2, K1-K2
     public int IStart { get; set; }

@@ -30,7 +30,7 @@ namespace ReservoirSimulator
         double[] Coord, Zcorn;
         readonly double Prefr, cr, γo0, γw0;
         Grid<Vector4d>[] Grids;
-        List<Well<Vector4d>> Wells;
+        public List<Well<Vector4d>> Wells;
         Aquifer Aquifer;
         Dictionary<(int, int), EQUILPressureDepth> EquilPVTCombinations = [];
         EclipseDataDeck DATA;
@@ -189,28 +189,16 @@ namespace ReservoirSimulator
                 double pwEquil = Utility.Interpolate(watertable, grid.Center.Z, pair => pair.Z, pair => pair.P);
                 double pc = poEquil - pwEquil;
 
+                double swMin = SWOFs[s].Result.SwMin, swMax = SWOFs[s].Result.SwMax;
+                double pcMin = SWOFs[s].Result.PcMin, pcMax = SWOFs[s].Result.PcMax;
 
-                double swMin = SWOFs[s].Result.SwMin;
-                double swMax = SWOFs[s].Result.SwMax;
-                double pcMin = SWOFs[s].Result.PcMin;
-                double pcMax = SWOFs[s].Result.PcMax;
-
-                if (pc <= pcMin)
-                {
-                    grid.Sw_n = swMax;
-                }
-                else if (pc >= pcMax)
-                {
-                    grid.Sw_n = swMin;
-                }
+                if (pc <= pcMin) grid.Sw_n = swMax;
+                else if (pc >= pcMax) grid.Sw_n = swMin;
                 else
-                {
-                    // SWOF is ordered by ascending Sw (descending Pc); reverse to search ascending Pc
                     grid.Sw_n = Utility.Interpolate(swoftable, pc, swof => swof.Pc, swof => swof.Sw);
-                }
+                
 
                 grid.So_n = 1.0 - grid.Sw_n;
-
                 // Enforce exact algebraic consistency with Residual: Pw = Po - Pcow(Sw)
                 double pcActual = grid.Pcow(grid.Sw_n).Value;
                 if (grid.Center.Z >= equildata.ZWOC)
@@ -234,8 +222,11 @@ namespace ReservoirSimulator
                 grid.SaveResult(po: grid.Po_n, pw: grid.Pw_n, so: grid.So_n, sw: grid.Sw_n);
             }
 
-            foreach(var well in Wells)
+            foreach (var well in Wells)
+            {
+                well.Pwf_n = well.PerfNatIndex.Select(m => Grids[m].Pw_n).Average();
                 well.SaveResult(pwf: well.Pwf_n, qo: well.Qo_n, qw: well.Qw_n);
+            }
         }
         void InitialGuess(double[] xs, double dt, bool isRetry = false, bool wellEventOccurred = false)
         {
@@ -842,7 +833,7 @@ namespace ReservoirSimulator
                             break;
 
                         // Converged at current xs (skip step-size requirement on iter 0 only if desired, or require iter > 0)
-                        if (rnorm < 1e-6 && (iter == 0 || (maxDSw < 1e-4 && maxDPo < 1e-2)))
+                        if (rnorm < 1e-6 && (iter == 0 || (maxDSw < 1e-3 && maxDPo < 1e-1)))
                         {
                             isConverged = true;
                             break;
@@ -1004,6 +995,11 @@ namespace ReservoirSimulator
                 List<ColVec> vectors = [Time, well.PWF, well.QO, well.QW];
                 string filename = Path.Combine(outputDir, $"{well.Name}.txt");
                 SepalSolver.Math.WriteMatrix(vectors, filename);
+
+                for (int i = 0; i < Time.Count; i++)
+                {
+
+                }
             }
         }
     }

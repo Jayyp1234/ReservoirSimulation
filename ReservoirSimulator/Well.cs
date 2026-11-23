@@ -110,7 +110,6 @@ namespace ReservoirSimulator
                     int m = comp.I + comp.J * Nx + kZero * Nx * Ny;
                     if (m < 0 || m >= Grids.Length) continue;
                     if (!Grids[m].isActive) continue;
-
                     allConnectedCells.TryAdd(m, comp);
                 }
             }

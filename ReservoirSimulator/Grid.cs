@@ -27,6 +27,29 @@ namespace ReservoirSimulator
         public (int i, int j, int k) IJKIndex { get; set; }
         internal Vector3d[] Corners { get; set; } = [];
         internal Vector3d Center { get; set; }
+        internal bool WriteBPR { get; set; } = false;
+        internal bool WriteBPW { get; set; } = false;
+        internal bool WriteBPG { get; set; } = false;
+        internal bool WriteBPB { get; set; } = false;
+        internal bool WriteBPCOW { get; set; } = false;
+        internal bool WriteBPCOG { get; set; } = false;
+        internal bool WriteBPOTO { get; set; } = false;
+        internal bool WriteBPOTW { get; set; } = false;
+        internal bool WriteBPOTG { get; set; } = false;
+        internal bool WriteBWSAT { get; set; } = false;
+        internal bool WriteBGSAT { get; set; } = false;
+        internal bool WriteBOSAT { get; set; } = false;
+        internal bool WriteBRS { get; set; } = false;
+        internal bool WriteBRV { get; set; } = false;
+        internal bool BBO { get; set; } = false;
+        internal bool BBW { get; set; } = false;
+        internal bool BBG { get; set; } = false;
+        internal bool BVISO { get; set; } = false;
+        internal bool BVISW { get; set; } = false;
+        internal bool BVISG { get; set; } = false;
+
+
+
 
         public List<double> PO = [], PW = [], PG = [], SW = [], SO = [], SG = [], PB = [], PD = [];
 

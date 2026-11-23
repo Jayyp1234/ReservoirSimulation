@@ -1,7 +1,6 @@
 ﻿using EclipseDeckReader;
-using System.Diagnostics;
+using static SepalSolver.PlotLib.Chart;
 using SepalSolver;
-using System.Text;
 
 
 {
@@ -51,4 +50,14 @@ using System.Text;
 
     string outputdir = @"C:\Users\lateef.a.kareem\Documents\SimulationResult";
     Reservoir.ExportResults(outputdir);
+    Subplot(3, 1, 0);
+    Plot(Reservoir.Time, Reservoir.Wells[0].QO); HoldOn();
+    Plot(Reservoir.Time, Reservoir.Wells[0].QW);
+    Subplot(3, 1, 1);
+    Plot(Reservoir.Time, Reservoir.Wells[1].QO); HoldOn();
+    Plot(Reservoir.Time, Reservoir.Wells[1].QW);
+    Subplot(3, 1, 2);
+    Plot(Reservoir.Time, Reservoir.Wells[0].PWF); HoldOn();
+    Plot(Reservoir.Time, Reservoir.Wells[1].PWF);
+    SaveAs(@"C:\Users\lateef.a.kareem\Documents\SimulationResult\WellProduction.png");
 }
