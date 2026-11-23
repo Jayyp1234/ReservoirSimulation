@@ -183,6 +183,12 @@ namespace ReservoirSimulator
 
             // WELLS
             Wells = [.. Data.Wells.Select(well => new Well<Vector4d>(well.Value, Nx, Ny, Nz, Grids, incomingUnit))];
+
+            // A well with no completion in an active cell cannot flow, and its rows in the Jacobian would be empty
+            // (singular matrix; its starting pressure in Initialize would average an empty list). Leave it out.
+            foreach (var well in Wells.Where(w => w.PerfNatIndex.Count == 0))
+                Console.WriteLine($"      [Warning] Well '{well.Name}' has no completion in an active cell; it is left out of the simulation.");
+            Wells.RemoveAll(w => w.PerfNatIndex.Count == 0);
             NumWells = Wells.Count;
         }
         public void Initialize()
