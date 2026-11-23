@@ -14,8 +14,14 @@ namespace EclipseDeckReader
         // Section being read (RUNSPEC, GRID, ..., SCHEDULE)
         private string section = "RUNSPEC";
 
+        // Skipped keywords already warned about, so a keyword repeated through the schedule is reported once
+        private readonly HashSet<string> warnedKeywords = [];
+
         public EclipseDataDeck LoadDeckFile(string filepath)
         {
+            // Reading state starts afresh for every deck, in case this reader is used again
+            box = null; section = "RUNSPEC"; warnedKeywords.Clear();
+
             var deck = new EclipseDataDeck();
             if (!File.Exists(filepath))
                 throw new FileNotFoundException("Master deck file not found.", filepath);
@@ -375,7 +381,7 @@ namespace EclipseDeckReader
                         default:
                             // A real keyword stands alone on its line; upper-case words beside other values (TOP, YES)
                             // are data of an unsupported keyword that the tokenizer also marks as keywords.
-                            if (section != "SUMMARY" && !IsOutputOrSizingKeyword(keyword) && IsAloneOnLine(tokens, keywordIndex))
+                            if (section != "SUMMARY" && !IsOutputOrSizingKeyword(keyword) && IsAloneOnLine(tokens, keywordIndex) && warnedKeywords.Add(keyword))
                                 Console.WriteLine($"      [Warning] Keyword '{keyword}' is not supported and was skipped; the results do not include it.");
                             SkipUnhandledKeywordPayload(tokens, ref i);
                             break;
