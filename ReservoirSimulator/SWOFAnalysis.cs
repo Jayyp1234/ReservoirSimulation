@@ -6,8 +6,16 @@ namespace ReservoirSimulator
 {
     public readonly struct SwofResult(double swi, double sor, double krwEndpoint, double kroEndpoint,
                           double nw, double no, double pd, double lambda,
-                          double pcRSquared, double krwRSquared, double kroRSquared)
+                          double pcRSquared, double krwRSquared, double kroRSquared, 
+                          double SwMin, double SwMax, double PcMin, double PcMax)
     {
+        // Core Endpoints
+        public readonly double SwMin = SwMin;                      // Connate Water Saturation
+        public readonly double SwMax = SwMax;                      // Maximum Water Saturation
+        public readonly double PcMin = PcMin;                      // Minimum Capillary Pressure
+        public readonly double PcMax = PcMax;                      // Maximum Capillary Pressure
+
+
         // Endpoints
         public readonly double Swi = swi;
         public readonly double Sor = sor;
@@ -31,21 +39,34 @@ namespace ReservoirSimulator
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluateKrw<T>(ADiff<T> sw) where T : struct, IVectorND<T>
         {
-            // Normalization: swNorm = (sw - swi) / (1.0 - swi - sor)
-            ADiff<T> swNorm = (sw - Swi) / (1.0 - Swi - Sor);
+            double denom = 1.0 - Swi - Sor;
+            ADiff<T> swNorm = (sw - Swi) / denom;
+
+            if (swNorm.Value <= 0.0)
+                return default; // 0 value and 0 derivative for Sw <= Swi
+
+            if (swNorm.Value >= 1.0)
+                return new ADiff<T>(KrwEndpoint, default); // Clamped at endpoint for Sw >= 1 - Sor
+
             return KrwEndpoint * Pow(swNorm, Nw);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluateKrow<T>(ADiff<T> sw) where T : struct, IVectorND<T>
         {
-            ADiff<T> swNorm = (sw - Swi) / (1.0 - Swi - Sor);
-            return KroEndpoint * Pow(1.0 - swNorm, No);
+            double denom = 1.0 - Swi - Sor;
+            ADiff<T> soNorm = (1.0 - sw - Sor) / denom;
+
+            if (soNorm.Value <= 0.0)
+                return default; // 0 value and 0 derivative for Sw >= 1 - Sor
+
+            if (soNorm.Value >= 1.0)
+                return new ADiff<T>(KroEndpoint, default); // Clamped at endpoint for Sw <= Swi
+
+            return KroEndpoint * Pow(soNorm, No);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        
-
         public ADiff<T> EvaluatePcow<T>(ADiff<T> sw) where T : struct, IVectorND<T>
         {
             const double eps = 1e-4;
@@ -88,7 +109,10 @@ namespace ReservoirSimulator
             double kroEndpoint = sorted.First().Krow;
 
             var sorRow = sorted.FirstOrDefault(r => r.Krow <= 0.0) ?? sorted.Last();
-            double swMax = sorRow.Sw;
+            double swMin = sorted.First().Sw;
+            double swMax = sorted.Last().Sw;
+            double pcMin = sorted.First().Pc;
+            double pcMax = sorted.Last().Pc;
             double sor = 1.0 - swMax;
             double krwEndpoint = sorRow.Krw;
 
@@ -130,7 +154,10 @@ namespace ReservoirSimulator
             double lambda = -1.0 / mPc;
             double pd = Exp(bPc);
 
-            Result = new(swi, sor, krwEndpoint, kroEndpoint, nw, no, pd, lambda, rSqPc, rSqW, rSqO);
+
+
+            Result = new(swi, sor, krwEndpoint, kroEndpoint, nw, no, 
+                        pd, lambda, rSqPc, rSqW, rSqO, swMin, swMax, pcMin, pcMax);
         }
 
         

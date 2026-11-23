@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 
@@ -36,16 +37,10 @@ namespace EclipseDeckReader
             {
                 if (tokens[i].Type == TokenType.Keyword)
                 {
-                    string keyword = tokens[i].Content.ToString().ToUpper();
+                    string keyword = tokens[i].Content.ToString().ToUpperInvariant();
                     i++;
 
-                    while (i < tokens.Count &&
-                          (tokens[i].Type == TokenType.NewLine ||
-                           string.IsNullOrWhiteSpace(tokens[i].Content.ToString()) ||
-                           tokens[i].Content.Span.StartsWith("--")))
-                    {
-                        i++;
-                    }
+                    ClearLeadingLayoutSpacers(tokens, ref i);
 
                     switch (keyword)
                     {
@@ -64,7 +59,8 @@ namespace EclipseDeckReader
                         case "GAS":
                         case "DISGAS":
                         case "VAPOIL":
-                            deck.PhaseFlags.Add(keyword);
+                            if (!deck.PhaseFlags.Contains(keyword))
+                                deck.PhaseFlags.Add(keyword);
                             break;
 
                         case "FIELD":
@@ -73,6 +69,48 @@ namespace EclipseDeckReader
                         case "PVT-M":
                             deck.UnitSystem = keyword;
                             Console.WriteLine($"      [Runspec] Unit System configured: {deck.UnitSystem}");
+                            break;
+
+                        // Standalone section/control/summary flags with no payload and no '/'
+                        case "GRID":
+                        case "EDIT":
+                        case "PROPS":
+                        case "REGIONS":
+                        case "SOLUTION":
+                        case "SUMMARY":
+                        case "SCHEDULE":
+                        case "ECHO":
+                        case "NOECHO":
+                        case "FOPR":
+                        case "FGOR":
+                        case "FWPR":
+                        case "FWIR":
+                        case "FGIR":
+                        case "FPR":
+                            break;
+
+                        case "END":
+                            Console.WriteLine("      [Pipeline] END keyword reached. Halting deck parse.");
+                            return;
+
+                        case "DX":
+                            deck.DxArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            Console.WriteLine($"      [Data] Current DX array status: {deck.DxArray.Count} entries.");
+                            break;
+
+                        case "DY":
+                            deck.DyArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            Console.WriteLine($"      [Data] Current DY array status: {deck.DyArray.Count} entries.");
+                            break;
+
+                        case "DZ":
+                            deck.DzArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            Console.WriteLine($"      [Data] Current DZ array status: {deck.DzArray.Count} entries.");
+                            break;
+
+                        case "TOPS":
+                            deck.ZtopArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            Console.WriteLine($"      [Data] Current TOPS (Ztop) array status: {deck.ZtopArray.Count} entries.");
                             break;
 
                         case "PORO":
@@ -117,7 +155,7 @@ namespace EclipseDeckReader
 
                         case "ACTNUM":
                             var actData = KeywordExtractor.ExtractIntArray(tokens, ref i);
-                            deck.ActnumArray = actData; 
+                            deck.ActnumArray = actData;
                             Console.WriteLine($"      [Data] Current ACTNUM array status: {deck.ActnumArray.Count} entries.");
                             break;
 
@@ -135,13 +173,13 @@ namespace EclipseDeckReader
 
                         case "SATNUM":
                             var satData = KeywordExtractor.ExtractIntArray(tokens, ref i);
-                            deck.SatnumArray = [..satData.Select(s => s - 1)]; 
+                            deck.SatnumArray = [.. satData.Select(s => s - 1)];
                             Console.WriteLine($"      [Data] SATNUM: Loaded and converted {deck.SatnumArray.Count} entries to 0-based indexing.");
                             break;
 
                         case "PVTNUM":
                             var pvtData = KeywordExtractor.ExtractIntArray(tokens, ref i);
-                            deck.PvtnumArray = [..pvtData.Select(p => p - 1)]; 
+                            deck.PvtnumArray = [.. pvtData.Select(p => p - 1)];
                             Console.WriteLine($"      [Data] PVTNUM: Loaded and converted {deck.PvtnumArray.Count} entries to 0-based indexing.");
                             break;
 
@@ -157,12 +195,22 @@ namespace EclipseDeckReader
                             ParseMultiplyModifierBlock(tokens, ref i, deck);
                             break;
 
-                        case "START": // Initial Day 0 baseline timestamp card
+                        case "START":
                             ParseStartBlock(tokens, ref i, deck);
                             break;
 
-                        case "DATES": // Parsed timeline card block synchronization
+                        case "DATES":
                             ParseDatesBlock(tokens, ref i, deck);
+                            break;
+
+                        case "TSTEP":
+                            ParseTstepBlock(tokens, ref i, deck);
+                            break;
+
+                        case "DRSDT":
+                            var drsdt = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            if (drsdt.Count > 0)
+                                Console.WriteLine($"      [Schedule] DRSDT configured: {drsdt[0]}");
                             break;
 
                         case "WELSPECS":
@@ -180,7 +228,6 @@ namespace EclipseDeckReader
                         case "WCONINJE":
                             ParseWconinjeBlock(tokens, ref i, deck);
                             break;
-
 
                         case "PVDO":
                             deck.RawPvdoTables.AddRange(ParseRowStructuredRegions(tokens, ref i, columnsPerRow: 3));
@@ -222,15 +269,14 @@ namespace EclipseDeckReader
                             Console.WriteLine($"      [Data] EQUIL: Loaded {deck.RawEquilTables.Count} region record(s).");
                             break;
 
-
-
                         case "EQUINUM":
+                        case "EQLNUM":
                             var equilData = KeywordExtractor.ExtractIntArray(tokens, ref i);
                             deck.EquinumArray = [.. equilData.Select(e => e - 1)];
                             Console.WriteLine($"      [Data] EQUINUM: Loaded and converted {deck.EquinumArray.Count} entries to 0-based indexing.");
                             break;
 
-                        case "DENSITY": 
+                        case "DENSITY":
                             var densities = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
                             if (densities.Count >= 3)
                             {
@@ -241,7 +287,7 @@ namespace EclipseDeckReader
                             }
                             break;
 
-                        case "ROCK": 
+                        case "ROCK":
                             var rockProps = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
                             if (rockProps.Count >= 2)
                             {
@@ -266,7 +312,7 @@ namespace EclipseDeckReader
 
                         case "FLUXNUM":
                             var fluxData = KeywordExtractor.ExtractIntArray(tokens, ref i);
-                            deck.FluxnumArray = fluxData; // Keep 1-based to match MULTREGT region IDs (1..20)
+                            deck.FluxnumArray = fluxData;
                             Console.WriteLine($"      [Data] FLUXNUM: Loaded {deck.FluxnumArray.Count} entries.");
                             break;
 
@@ -285,8 +331,7 @@ namespace EclipseDeckReader
                             break;
 
                         default:
-                            while (i < tokens.Count && tokens[i].Type != TokenType.Slash && tokens[i].Type != TokenType.Keyword) i++;
-                            if (i < tokens.Count && tokens[i].Type == TokenType.Slash) i++;
+                            SkipUnhandledKeywordPayload(tokens, ref i);
                             break;
                     }
                 }
@@ -296,6 +341,33 @@ namespace EclipseDeckReader
                 }
             }
         }
+
+        private static void SkipUnhandledKeywordPayload(List<Token> tokens, ref int index)
+        {
+            while (index < tokens.Count)
+            {
+                ClearLeadingLayoutSpacers(tokens, ref index);
+                if (index >= tokens.Count) break;
+                if (tokens[index].Type == TokenType.Keyword) break;
+
+                if (tokens[index].Type == TokenType.Slash || tokens[index].Content.ToString() == "/")
+                {
+                    index++;
+                    ClearLeadingLayoutSpacers(tokens, ref index);
+                    if (index < tokens.Count && (tokens[index].Type == TokenType.Slash || tokens[index].Content.ToString() == "/"))
+                    {
+                        index++;
+                        break;
+                    }
+                    if (index < tokens.Count && tokens[index].Type == TokenType.Keyword)
+                        break;
+                    continue;
+                }
+
+                index++;
+            }
+        }
+
         private static List<List<List<double>>> ParseNestedPvtRegions(List<Token> tokens, ref int index)
         {
             var regions = new List<List<List<double>>>();
@@ -307,26 +379,22 @@ namespace EclipseDeckReader
                 ClearLeadingLayoutSpacers(tokens, ref index);
                 if (index >= tokens.Count) break;
 
-                // Stop when the next ECLIPSE keyword begins
                 if (tokens[index].Type == TokenType.Keyword)
                 {
                     break;
                 }
 
-                // Handle slash '/' terminators
                 if (tokens[index].Type == TokenType.Slash || tokens[index].Content.ToString() == "/")
                 {
-                    index++; // Consume the slash
+                    index++;
 
                     if (currentSubTable.Count > 0)
                     {
-                        // Inner slash: closes the current Rs (or P) undersaturated branch
                         currentRegionSubTables.Add(currentSubTable);
                         currentSubTable = new List<double>();
                     }
                     else
                     {
-                        // Empty slash right after an inner slash ('/ /'): closes the entire PVT region
                         if (currentRegionSubTables.Count > 0)
                         {
                             regions.Add(currentRegionSubTables);
@@ -339,7 +407,6 @@ namespace EclipseDeckReader
                 string rawVal = tokens[index].Content.ToString();
                 index++;
 
-                // Handle defaulted tokens like "1*" or "3*" -> 0.0
                 if (rawVal.EndsWith('*') && int.TryParse(rawVal.AsSpan(0, rawVal.Length - 1), out int defaultCount))
                 {
                     for (int d = 0; d < defaultCount; d++)
@@ -347,22 +414,20 @@ namespace EclipseDeckReader
                     continue;
                 }
 
-                // Unpack repeat notation if present (e.g., 3*1.25)
                 int starIdx = rawVal.IndexOf('*');
                 if (starIdx > 0 &&
                     int.TryParse(rawVal.AsSpan(0, starIdx), out int repeatCount) &&
-                    double.TryParse(rawVal.AsSpan(starIdx + 1), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double repeatedVal))
+                    double.TryParse(rawVal.AsSpan(starIdx + 1), NumberStyles.Any, CultureInfo.InvariantCulture, out double repeatedVal))
                 {
                     for (int r = 0; r < repeatCount; r++)
                         currentSubTable.Add(repeatedVal);
                 }
-                else if (double.TryParse(rawVal, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double val))
+                else if (double.TryParse(rawVal, NumberStyles.Any, CultureInfo.InvariantCulture, out double val))
                 {
                     currentSubTable.Add(val);
                 }
             }
 
-            // Flush any trailing unclosed sub-table or region at EOF
             if (currentSubTable.Count > 0)
                 currentRegionSubTables.Add(currentSubTable);
             if (currentRegionSubTables.Count > 0)
@@ -370,6 +435,7 @@ namespace EclipseDeckReader
 
             return regions;
         }
+
         private static List<List<List<double>>> ParseRowStructuredRegions(List<Token> tokens, ref int index, int columnsPerRow)
         {
             var regions = new List<List<List<double>>>();
@@ -387,7 +453,7 @@ namespace EclipseDeckReader
 
                 if (tokens[index].Type == TokenType.Slash || tokens[index].Content.ToString() == "/")
                 {
-                    index++; // Consume slash terminating this region
+                    index++;
                     if (flatRegionValues.Count > 0)
                     {
                         regions.Add(ChunkIntoRows(flatRegionValues, columnsPerRow));
@@ -399,7 +465,6 @@ namespace EclipseDeckReader
                 string rawVal = tokens[index].Content.ToString();
                 index++;
 
-                // Handle defaulted tokens like "1*" or "3*" -> 0.0
                 if (rawVal.EndsWith('*') && int.TryParse(rawVal.AsSpan(0, rawVal.Length - 1), out int defaultCount))
                 {
                     for (int d = 0; d < defaultCount; d++)
@@ -407,16 +472,15 @@ namespace EclipseDeckReader
                     continue;
                 }
 
-                // Handle repeat notation like "3*1.25"
                 int starIdx = rawVal.IndexOf('*');
                 if (starIdx > 0 &&
                     int.TryParse(rawVal.AsSpan(0, starIdx), out int repeatCount) &&
-                    double.TryParse(rawVal.AsSpan(starIdx + 1), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double repeatedVal))
+                    double.TryParse(rawVal.AsSpan(starIdx + 1), NumberStyles.Any, CultureInfo.InvariantCulture, out double repeatedVal))
                 {
                     for (int r = 0; r < repeatCount; r++)
                         flatRegionValues.Add(repeatedVal);
                 }
-                else if (double.TryParse(rawVal, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double val))
+                else if (double.TryParse(rawVal, NumberStyles.Any, CultureInfo.InvariantCulture, out double val))
                 {
                     flatRegionValues.Add(val);
                 }
@@ -464,7 +528,7 @@ namespace EclipseDeckReader
 
             if (int.TryParse(tokens[index].Content.ToString(), out int day))
             {
-                string monthStr = tokens[index + 1].Content.ToString().Trim('\'').Trim('"').ToUpper();
+                string monthStr = tokens[index + 1].Content.ToString().Trim('\'').Trim('"').ToUpperInvariant();
                 int.TryParse(tokens[index + 2].Content.ToString(), out int year);
 
                 int month = monthStr switch
@@ -474,8 +538,8 @@ namespace EclipseDeckReader
                     "MAR" => 3,
                     "APR" => 4,
                     "MAY" => 5,
-                    "JUN" => 6,
-                    "JUL" => 7,
+                    "JUN" or "JNE" => 6,
+                    "JUL" or "JLY" => 7,
                     "AUG" => 8,
                     "SEP" => 9,
                     "OCT" => 10,
@@ -484,7 +548,6 @@ namespace EclipseDeckReader
                     _ => 1
                 };
 
-                // Initialize both the baseline Start Date and the tracking Current Date
                 deck.StartDate = new DateTime(year, month, day);
                 deck.CurrentSimDate = deck.StartDate;
 
@@ -501,53 +564,100 @@ namespace EclipseDeckReader
             {
                 ClearLeadingLayoutSpacers(tokens, ref index);
                 if (index >= tokens.Count || tokens[index].Type == TokenType.Slash) { if (index < tokens.Count) index++; break; }
+                if (tokens[index].Type == TokenType.Keyword) break;
 
                 if (int.TryParse(tokens[index].Content.ToString(), out int day))
                 {
-                    string monthStr = tokens[index + 1].Content.ToString().Trim('\'').Trim('"').ToUpper();
+                    string monthStr = tokens[index + 1].Content.ToString().Trim('\'').Trim('"').ToUpperInvariant();
                     int.TryParse(tokens[index + 2].Content.ToString(), out int year);
 
-                    int month = monthStr switch
-                    {
-                        "JAN" => 1,
-                        "FEB" => 2,
-                        "MAR" => 3,
-                        "APR" => 4,
-                        "MAY" => 5,
-                        "JUN" => 6,
-                        "JUL" => 7,
-                        "AUG" => 8,
-                        "SEP" => 9,
-                        "OCT" => 10,
-                        "NOV" => 11,
-                        "DEC" => 12,
-                        _ => 1
-                    };
+                    int month = ParseEclipseMonth(monthStr);
+                    var nextDate = new DateTime(year, month, day);
 
-                    deck.CurrentSimDate = new DateTime(year, month, day);
-                    Console.WriteLine($"      [Schedule Sync] Simulator internal baseline timeline stepped to: {deck.CurrentSimDate:yyyy-MM-dd}");
+                    if (deck.StartDate == default)
+                        deck.StartDate = nextDate;
+
+                    double dtDays = (nextDate - deck.CurrentSimDate).TotalDays;
+                    if (dtDays > 0)
+                    {
+                        deck.TimeSteps.Add(dtDays);
+                        deck.ReportDates.Add(nextDate);
+                    }
+
+                    deck.CurrentSimDate = nextDate;
+                    Console.WriteLine($"      [Schedule Sync] DATES stepped to: {deck.CurrentSimDate:yyyy-MM-dd} (dt = {dtDays:F1} days)");
                 }
                 index += 3;
                 AdvanceAndClearTrailingJunk(tokens, ref index);
             }
         }
 
+        private void ParseTstepBlock(List<Token> tokens, ref int index, EclipseDataDeck deck)
+        {
+            var steps = KeywordExtractor.ExtractDoubleArray(tokens, ref index);
+            if (steps.Count == 0) return;
+
+            // Anchor Day 0 cleanly if START was omitted (e.g., SPE1 Odeh deck)
+            if (deck.StartDate == default)
+            {
+                deck.StartDate = new DateTime(2000, 1, 1);
+                deck.CurrentSimDate = deck.StartDate;
+            }
+
+            double totalDays = 0.0;
+            foreach (double dt in steps)
+            {
+                if (dt <= 0) continue;
+
+                deck.TimeSteps.Add(dt);
+                deck.CurrentSimDate = deck.CurrentSimDate.AddDays(dt);
+                deck.ReportDates.Add(deck.CurrentSimDate);
+                totalDays += dt;
+            }
+
+            Console.WriteLine($"      [Schedule Sync] TSTEP: Added {steps.Count} report step(s) ({totalDays:F0} days) -> End Date: {deck.CurrentSimDate:yyyy-MM-dd}");
+        }
+
+        private static int ParseEclipseMonth(string monthStr) => monthStr.Trim().Trim('\'').Trim('"').ToUpperInvariant() switch
+        {
+            "JAN" or "JANUARY" => 1,
+            "FEB" or "FEBRUARY" => 2,
+            "MAR" or "MARCH" => 3,
+            "APR" or "APRIL" => 4,
+            "MAY" => 5,
+            "JUN" or "JNE" or "JUNE" => 6,
+            "JUL" or "JLY" or "JULY" => 7,
+            "AUG" or "AUGUST" => 8,
+            "SEP" or "SEPT" or "SEPTEMBER" => 9,
+            "OCT" or "OCTOBER" => 10,
+            "NOV" or "NOVEMBER" => 11,
+            "DEC" or "DECEMBER" => 12,
+            _ => throw new FormatException($"Unrecognized ECLIPSE month token: '{monthStr}'.")
+        };
+
+
         private void ParseWellSpecsBlock(List<Token> tokens, ref int index, EclipseDataDeck deck)
         {
             while (index < tokens.Count)
             {
                 ClearLeadingLayoutSpacers(tokens, ref index);
-                if (index >= tokens.Count || tokens[index].Type == TokenType.Slash) { if (index < tokens.Count) index++; break; }
+                if (index >= tokens.Count) break;
+                if (tokens[index].Type == TokenType.Slash || tokens[index].Content.ToString() == "/")
+                {
+                    index++;
+                    break;
+                }
+                if (tokens[index].Type == TokenType.Keyword) break;
 
-                string wellName = tokens[index].Content.ToString().Trim('\'').Trim('"');
-                string groupName = tokens[index + 1].Content.ToString().Trim('\'').Trim('"');
-                int.TryParse(tokens[index + 2].Content.ToString(), out int headI);
-                int.TryParse(tokens[index + 3].Content.ToString(), out int headJ);
-                double.TryParse(tokens[index + 4].Content.ToString(), System.Globalization.CultureInfo.InvariantCulture, out double refDepth);
-                string prefPhase = (index + 5 < tokens.Count) ? tokens[index + 5].Content.ToString().Trim('\'').Trim('"') : "OIL";
+                List<string> record = ReadRecordTokensUntilSlash(tokens, ref index);
+                if (record.Count < 4) continue;
 
-                index += 6;
-                AdvanceAndClearTrailingJunk(tokens, ref index);
+                string wellName = record[0];
+                string groupName = record[1] != "1*" ? record[1] : "FIELD";
+                int.TryParse(record[2], out int headI);
+                int.TryParse(record[3], out int headJ);
+                double refDepth = ParseOptionalDouble(record, 4, fallback: 0.0);
+                string prefPhase = (record.Count > 5 && record[5] != "1*") ? record[5].ToUpperInvariant() : "OIL";
 
                 if (!deck.Wells.TryGetValue(wellName, out var wellData))
                 {
@@ -566,6 +676,7 @@ namespace EclipseDeckReader
                 };
             }
         }
+
         private static IEnumerable<WellData> ResolveMatchingWells(EclipseDataDeck deck, string wellNamePattern, bool createIfMissing = true)
         {
             if (wellNamePattern.EndsWith('*'))
@@ -610,7 +721,6 @@ namespace EclipseDeckReader
 
                 foreach (var wellData in ResolveMatchingWells(deck, wellPattern))
                 {
-                    // Default I and J (1* or <= 0) to WELSPECS HeadI / HeadJ
                     int iRaw = (record[1] == "1*" || !int.TryParse(record[1], out int parsedI) || parsedI <= 0)
                         ? wellData.Specification.HeadI
                         : parsedI;
@@ -622,11 +732,9 @@ namespace EclipseDeckReader
                     int.TryParse(record[3], out int kStart);
                     int.TryParse(record[4], out int kEnd);
 
-                    string status = record.Count > 5 && record[5] != "1*" ? record[5].ToUpper() : "OPEN";
-                    // record[6] = saturation table number
+                    string status = record.Count > 5 && record[5] != "1*" ? record[5].ToUpperInvariant() : "OPEN";
                     double transFactor = ParseOptionalDouble(record, 7, fallback: 0.0);
                     double dia = ParseOptionalDouble(record, 8, fallback: 0.5);
-                    // record[9] = Kh
                     double skin = ParseOptionalDouble(record, 10, fallback: 0.0);
 
                     int iZeroBased = iRaw - 1;
@@ -650,6 +758,7 @@ namespace EclipseDeckReader
                 }
             }
         }
+
         private static void ClearLeadingLayoutSpacers(List<Token> tokens, ref int index)
         {
             while (index < tokens.Count &&
@@ -697,19 +806,19 @@ namespace EclipseDeckReader
                 if (index >= tokens.Count) break;
                 if (tokens[index].Type == TokenType.Slash) { index++; break; }
 
-                string targetProp = tokens[index].Content.ToString().ToUpper().Trim('\'').Trim('"');
+                string targetProp = tokens[index].Content.ToString().ToUpperInvariant().Trim('\'').Trim('"');
 
                 if (tokens[index].Type == TokenType.Keyword &&
                     targetProp != "PERMX" && targetProp != "PERMY" && targetProp != "PERMZ" && targetProp != "PORO" &&
                     targetProp != "NTG" && targetProp != "ACTNUM" && targetProp != "MULTX" && targetProp != "MULTY" && targetProp != "MULTZ" &&
-                    targetProp != "DX" && targetProp != "DY" && targetProp != "DZ" && targetProp != "ZTOP")
+                    targetProp != "DX" && targetProp != "DY" && targetProp != "DZ" && targetProp != "ZTOP" && targetProp != "TOPS")
                 {
                     break;
                 }
 
                 if (index + 7 >= tokens.Count) break;
 
-                double.TryParse(tokens[index + 1].Content.ToString(), System.Globalization.CultureInfo.InvariantCulture, out double multiplierValue);
+                double.TryParse(tokens[index + 1].Content.ToString(), CultureInfo.InvariantCulture, out double multiplierValue);
 
                 int.TryParse(tokens[index + 2].Content.ToString(), out int iStart);
                 int.TryParse(tokens[index + 3].Content.ToString(), out int iEnd);
@@ -765,7 +874,7 @@ namespace EclipseDeckReader
                     "DX" => deck.DxArray,
                     "DY" => deck.DyArray,
                     "DZ" => deck.DzArray,
-                    "ZTOP" => deck.ZtopArray,
+                    "ZTOP" or "TOPS" => deck.ZtopArray,
                     _ => null
                 };
 
@@ -806,8 +915,8 @@ namespace EclipseDeckReader
 
                 if (index + 1 >= tokens.Count) break;
 
-                string sourceProp = tokens[index].Content.ToString().ToUpper();
-                string targetProp = tokens[index + 1].Content.ToString().ToUpper();
+                string sourceProp = tokens[index].Content.ToString().ToUpperInvariant();
+                string targetProp = tokens[index + 1].Content.ToString().ToUpperInvariant();
                 index += 2;
 
                 while (index < tokens.Count && tokens[index].Type != TokenType.Slash && tokens[index].Type != TokenType.Keyword) index++;
@@ -834,7 +943,7 @@ namespace EclipseDeckReader
                     "DX" => deck.DxArray,
                     "DY" => deck.DyArray,
                     "DZ" => deck.DzArray,
-                    "ZTOP" => deck.ZtopArray,
+                    "ZTOP" or "TOPS" => deck.ZtopArray,
                     _ => null
                 };
 
@@ -854,7 +963,8 @@ namespace EclipseDeckReader
                         case "DX": deck.DxArray = clonedArray; break;
                         case "DY": deck.DyArray = clonedArray; break;
                         case "DZ": deck.DzArray = clonedArray; break;
-                        case "ZTOP": deck.ZtopArray = clonedArray; break;
+                        case "ZTOP":
+                        case "TOPS": deck.ZtopArray = clonedArray; break;
                     }
                     Console.WriteLine($"      [ARRAY MODIFICATION - COPY] Modified '{targetProp}': Overwrote array values by cloning all {clonedArray.Count} elements from '{sourceProp}'");
                 }
@@ -877,12 +987,12 @@ namespace EclipseDeckReader
                 if (index >= tokens.Count) break;
                 if (tokens[index].Type == TokenType.Slash) { index++; break; }
 
-                string targetProp = tokens[index].Content.ToString().ToUpper().Trim('\'').Trim('"');
+                string targetProp = tokens[index].Content.ToString().ToUpperInvariant().Trim('\'').Trim('"');
 
                 if (tokens[index].Type == TokenType.Keyword &&
                     targetProp != "PERMX" && targetProp != "PERMY" && targetProp != "PERMZ" && targetProp != "PORO" &&
                     targetProp != "NTG" && targetProp != "ACTNUM" && targetProp != "MULTX" && targetProp != "MULTY" && targetProp != "MULTZ" &&
-                    targetProp != "DX" && targetProp != "DY" && targetProp != "DZ" && targetProp != "ZTOP")
+                    targetProp != "DX" && targetProp != "DY" && targetProp != "DZ" && targetProp != "ZTOP" && targetProp != "TOPS")
                 {
                     break;
                 }
@@ -890,7 +1000,7 @@ namespace EclipseDeckReader
 
                 if (index >= tokens.Count) break;
 
-                if (!double.TryParse(tokens[index].Content.ToString(), System.Globalization.CultureInfo.InvariantCulture, out double value))
+                if (!double.TryParse(tokens[index].Content.ToString(), CultureInfo.InvariantCulture, out double value))
                 {
                     value = 0.0;
                 }
@@ -922,7 +1032,7 @@ namespace EclipseDeckReader
                 if (targetProp == "MULTX" || targetProp == "MULTY" || targetProp == "MULTZ" ||
                     targetProp == "PERMX" || targetProp == "PERMY" || targetProp == "PERMZ" ||
                     targetProp == "PORO" || targetProp == "NTG" || targetProp == "DX" ||
-                    targetProp == "DY" || targetProp == "DZ" || targetProp == "ZTOP")
+                    targetProp == "DY" || targetProp == "DZ" || targetProp == "ZTOP" || targetProp == "TOPS")
                 {
                     List<double> targetArray = targetProp switch
                     {
@@ -937,13 +1047,12 @@ namespace EclipseDeckReader
                         "DX" => deck.DxArray,
                         "DY" => deck.DyArray,
                         "DZ" => deck.DzArray,
-                        "ZTOP" => deck.ZtopArray,
+                        "ZTOP" or "TOPS" => deck.ZtopArray,
                         _ => null
                     };
 
                     if (targetArray != null)
                     {
-                        // Ensure it's correctly allocated if it was completely empty prior to this EQUALS run
                         if (targetArray.Count == 0) InitializeUniformArray(targetArray, totalCells, 1.0);
 
                         int modificationCount = 0; int flatk, flatj, flati;
@@ -952,7 +1061,7 @@ namespace EclipseDeckReader
                             flatk = k - 1;
                             for (int j = jStart; j <= jEnd; j++)
                             {
-                                flatj = flatk * deck.NY + (j - 1); 
+                                flatj = flatk * deck.NY + (j - 1);
                                 for (int i = iStart; i <= iEnd; i++)
                                 {
                                     flati = flatj * deck.NX + (i - 1);
@@ -969,7 +1078,6 @@ namespace EclipseDeckReader
                 }
                 else
                 {
-                    // The value read from the EQUALS card
                     int adjustedValue = (int)value;
 
                     switch (targetProp)
@@ -980,20 +1088,17 @@ namespace EclipseDeckReader
                             break;
 
                         case "SATNUM":
-                            if (deck.SatnumArray.Count == 0) InitializeUniformArray(deck.SatnumArray, totalCells, 0); // Default to index 0
-                            // Convert user input value (1-based) to 0-based internal storage
+                            if (deck.SatnumArray.Count == 0) InitializeUniformArray(deck.SatnumArray, totalCells, 0);
                             ApplyIntEqualsOverride(deck.SatnumArray, adjustedValue - 1, iStart, iEnd, jStart, jEnd, kStart, kEnd, deck.NX, deck.NY, totalCells, targetProp);
                             break;
 
                         case "PVTNUM":
-                            if (deck.PvtnumArray.Count == 0) InitializeUniformArray(deck.PvtnumArray, totalCells, 0); // Default to index 0
-                            // Convert user input value (1-based) to 0-based internal storage
+                            if (deck.PvtnumArray.Count == 0) InitializeUniformArray(deck.PvtnumArray, totalCells, 0);
                             ApplyIntEqualsOverride(deck.PvtnumArray, adjustedValue - 1, iStart, iEnd, jStart, jEnd, kStart, kEnd, deck.NX, deck.NY, totalCells, targetProp);
                             break;
 
                         case "EQUINUM":
-                            if (deck.EquinumArray.Count == 0) InitializeUniformArray(deck.EquinumArray, totalCells, 0); // Default to index 0
-                            // Convert user input value (1-based) to 0-based internal storage
+                            if (deck.EquinumArray.Count == 0) InitializeUniformArray(deck.EquinumArray, totalCells, 0);
                             ApplyIntEqualsOverride(deck.EquinumArray, adjustedValue - 1, iStart, iEnd, jStart, jEnd, kStart, kEnd, deck.NX, deck.NY, totalCells, targetProp);
                             break;
 
@@ -1043,7 +1148,7 @@ namespace EclipseDeckReader
         {
             array.Clear();
             array.Capacity = size;
-            for (int c = 0; c < size; c++) array.Add(value); 
+            for (int c = 0; c < size; c++) array.Add(value);
         }
 
         private void HandleIncludeKeyword(List<Token> tokens, ref int index, string baseFilePath, EclipseDataDeck deck)
@@ -1124,7 +1229,7 @@ namespace EclipseDeckReader
 
                 string faultName = tokens[index].Content.ToString().Trim('\'').Trim('"');
 
-                if (double.TryParse(tokens[index + 1].Content.ToString(), System.Globalization.CultureInfo.InvariantCulture, out double multiplier))
+                if (double.TryParse(tokens[index + 1].Content.ToString(), CultureInfo.InvariantCulture, out double multiplier))
                 {
                     if (faults.TryGetValue(faultName, out var record))
                     {
@@ -1137,7 +1242,6 @@ namespace EclipseDeckReader
             Console.WriteLine($"      [Data] MULTFLT section processed: {linesUpdated} transmissibility overrides applied.");
         }
 
-
         private static List<string> ReadRecordTokensUntilSlash(List<Token> tokens, ref int index)
         {
             var record = new List<string>();
@@ -1149,11 +1253,10 @@ namespace EclipseDeckReader
 
                 if (tokens[index].Type == TokenType.Slash || tokens[index].Content.ToString() == "/")
                 {
-                    index++; // Consume terminating slash
+                    index++;
                     break;
                 }
 
-                // Hit next keyword before slash (malformed record guard)
                 if (tokens[index].Type == TokenType.Keyword)
                 {
                     break;
@@ -1162,7 +1265,6 @@ namespace EclipseDeckReader
                 string rawVal = tokens[index].Content.ToString().Trim('\'').Trim('"');
                 index++;
 
-                // Handle ECLIPSE default multipliers like "1*", "3*", "4*"
                 if (rawVal.EndsWith("*") && int.TryParse(rawVal.TrimEnd('*'), out int repeatCount))
                 {
                     for (int r = 0; r < repeatCount; r++) record.Add("1*");
@@ -1193,9 +1295,9 @@ namespace EclipseDeckReader
             if (pos >= items.Count) return fallback;
             string val = items[pos];
             if (val == "1*" || string.IsNullOrWhiteSpace(val)) return fallback;
-            return double.TryParse(val, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double parsed) ? parsed : fallback;
+            return double.TryParse(val, NumberStyles.Any, CultureInfo.InvariantCulture, out double parsed) ? parsed : fallback;
         }
-        
+
         private void ParseWconprodBlock(List<Token> tokens, ref int index, EclipseDataDeck deck)
         {
             while (index < tokens.Count)
@@ -1213,8 +1315,8 @@ namespace EclipseDeckReader
                 if (record.Count == 0) continue;
 
                 string wellPattern = record[0];
-                string wellStatus = record.Count > 1 && record[1] != "1*" ? record[1].ToUpper() : "OPEN";
-                string mode = record.Count > 2 && record[2] != "1*" ? record[2].ToUpper() : "BHP";
+                string wellStatus = record.Count > 1 && record[1] != "1*" ? record[1].ToUpperInvariant() : "OPEN";
+                string mode = record.Count > 2 && record[2] != "1*" ? record[2].ToUpperInvariant() : "BHP";
 
                 double oRat = ParseOptionalDouble(record, 3);
                 double wRat = ParseOptionalDouble(record, 4);
@@ -1260,9 +1362,9 @@ namespace EclipseDeckReader
                 if (record.Count == 0) continue;
 
                 string wellPattern = record[0];
-                string phaseType = record.Count > 1 && record[1] != "1*" ? record[1].ToUpper() : "WATER";
-                string wellStatus = record.Count > 2 && record[2] != "1*" ? record[2].ToUpper() : "OPEN";
-                string mode = record.Count > 3 && record[3] != "1*" ? record[3].ToUpper() : "RATE";
+                string phaseType = record.Count > 1 && record[1] != "1*" ? record[1].ToUpperInvariant() : "WATER";
+                string wellStatus = record.Count > 2 && record[2] != "1*" ? record[2].ToUpperInvariant() : "OPEN";
+                string mode = record.Count > 3 && record[3] != "1*" ? record[3].ToUpperInvariant() : "RATE";
                 double rate = ParseOptionalDouble(record, 4);
                 double resvRate = ParseOptionalDouble(record, 5);
                 double maxBhp = ParseOptionalDouble(record, 6);
@@ -1294,7 +1396,6 @@ namespace EclipseDeckReader
                 ClearLeadingLayoutSpacers(tokens, ref index);
                 if (index >= tokens.Count) break;
 
-                // Standalone '/' closes the MULTREGT keyword block
                 if (tokens[index].Type == TokenType.Slash || tokens[index].Content.ToString() == "/")
                 {
                     index++;
@@ -1326,5 +1427,6 @@ namespace EclipseDeckReader
 
             Console.WriteLine($"      [Data] MULTREGT: Loaded {multregtRecords.Count - countBefore} region transmissibility multiplier(s).");
         }
+
     }
 }

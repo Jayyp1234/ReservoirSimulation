@@ -71,8 +71,12 @@ namespace EclipseDeckReader
         public Dictionary<string, WellData> Wells { get; } = new(StringComparer.OrdinalIgnoreCase);
 
         // 12. Dynamic Timeline Synchronization State
+
+        // 12. Dynamic Timeline Synchronization State
         public DateTime StartDate { get; set; }                       // Master baseline anchor point (Day 0)
         public DateTime CurrentSimDate { get; set; } = DateTime.Now;  // Tracks active day as scheduler advances
+        public List<double> TimeSteps { get; } = [];                  // Explicit dt durations (in days) from TSTEP & DATES
+        public List<DateTime> ReportDates { get; } = [];              // Cumulative target dates for each report step
     }
 
     public readonly record struct MultregtRecord(

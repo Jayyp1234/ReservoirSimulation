@@ -150,6 +150,10 @@ namespace EclipseDeckReader
             PrintTableGroupOverview("Water-Oil Saturation Functions (SWOF)", deck.RawSwofTables);
             PrintTableGroupOverview("Gas-Oil Saturation Functions (SGOF)", deck.RawSgofTables);
             Console.WriteLine("==================================================================");
+
+            // 11. Schedule Timeline Overview
+            Console.WriteLine($"* Schedule Timeline                  : Start = {deck.StartDate:yyyy-MM-dd} | End = {deck.CurrentSimDate:yyyy-MM-dd}");
+            Console.WriteLine($"  └─ Total Report Steps              : {deck.TimeSteps.Count} (Cumulative Duration = {deck.TimeSteps.Sum():F1} days)");
         }
 
         private static void PrintArrayStats(string arrayName, List<double> array)

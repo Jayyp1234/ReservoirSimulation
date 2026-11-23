@@ -26,6 +26,10 @@ namespace ReservoirSimulator
         {
             return BoAtPref * Exp(-Co * (p - PRef));
         }
+        public double EvaluateBo(double p)
+        {
+            return BoAtPref * Exp(-Co * (p - PRef));
+        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluateMuo<T>(ADiff<T> p) where T : struct, IVectorND<T>

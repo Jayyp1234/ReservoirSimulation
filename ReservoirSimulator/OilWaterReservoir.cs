@@ -75,15 +75,16 @@ namespace ReservoirSimulator
             Grids = Zcorn is not null ? Utility.ProcessGrid<Vector4d>(Nx, Ny, Nz, Coord, Zcorn, Φ, Kx, Ky, Kz) :
                 Utility.ProcessGrid<Vector4d>(Nx, Ny, Nz, Dx, Dy, Dz, zTop, Φ, Kx, Ky, Kz);
 
-            // PVTW
+            // Process PVTW and PVDO tables.
             PVTWs = [.. Data.RawPvtwTables.Select(pvtw => new PVTWAnalysis(pvtw, incomingUnit))];
-            foreach (var pvtw in PVTWs) pvtw.FitProperties();
-
-            // PVDO
             PVDOs = [.. Data.RawPvdoTables.Select(pvdo => new PVDOAnalysis(pvdo, incomingUnit))];
-            foreach (var pvdo in PVDOs) pvdo.FitProperties();
+            for (int i = 0; i < PVTWs.Length; i++)
+            {
+                PVTWs[i].FitProperties();
+                PVDOs[i].FitProperties();
+            }
 
-            // SWOF
+            // Process SWOF tables.
             SWOFs = [.. Data.RawSwofTables.Select(swof => new SWOFAnalysis(swof, incomingUnit))];
             foreach (var swof in SWOFs) swof.FitProperties();
 
@@ -117,11 +118,8 @@ namespace ReservoirSimulator
                 for (int p = 0; p < PVDOs.Length; p++)
                 {
                     var equil = EQUILs[e]; var pvdo = PVDOs[p]; var pvtw = PVTWs[p];
-                    double BoAtPref = pvdo.Result.BoAtPref, BwAtPref = pvtw.Result.BwAtPref;
-                    double Co = pvdo.Result.Co, Cw = pvtw.Result.Cw;
-                    double PRefo = pvdo.Result.PRef, PRefw = pvtw.Result.PRef;
-                    Func<double, double> γo = P => γo0 / (BoAtPref * Exp(-Co * (P - PRefo))),
-                                         γw = P => γw0 / (BwAtPref * Exp(-Cw * (P - PRefw)));
+                    Func<double, double> γo = P => γo0 / pvdo.Result.EvaluateBo(P),
+                                         γw = P => γw0 / pvtw.Result.EvaluateBw(P);
 
                     var equildata = new EQUILPressureDepth(equil);
                     int nDatum = Max(10, (int)(Abs(equildata.ZDatum - equildata.ZWOC) / Max(1.0, MaxZ - MinZ) * Nz * 10));
@@ -191,10 +189,11 @@ namespace ReservoirSimulator
                 double pwEquil = Utility.Interpolate(watertable, grid.Center.Z, pair => pair.Z, pair => pair.P);
                 double pc = poEquil - pwEquil;
 
-                double swMin = swoftable.Min(swof => swof.Sw);
-                double swMax = swoftable.Max(swof => swof.Sw);
-                double pcMin = swoftable.Min(swof => swof.Pc);
-                double pcMax = swoftable.Max(swof => swof.Pc);
+
+                double swMin = SWOFs[s].Result.SwMin;
+                double swMax = SWOFs[s].Result.SwMax;
+                double pcMin = SWOFs[s].Result.PcMin;
+                double pcMax = SWOFs[s].Result.PcMax;
 
                 if (pc <= pcMin)
                 {
@@ -207,8 +206,7 @@ namespace ReservoirSimulator
                 else
                 {
                     // SWOF is ordered by ascending Sw (descending Pc); reverse to search ascending Pc
-                    var ascPcTable = swoftable.AsEnumerable().Reverse().ToList();
-                    grid.Sw_n = Utility.Interpolate(ascPcTable, pc, swof => swof.Pc, swof => swof.Sw);
+                    grid.Sw_n = Utility.Interpolate(swoftable, pc, swof => swof.Pc, swof => swof.Sw);
                 }
 
                 grid.So_n = 1.0 - grid.Sw_n;
@@ -360,8 +358,24 @@ namespace ReservoirSimulator
             return (maxPd, maxSd);
         }
 
-        public void Simulate(double[] ResultTime)
+        public static double[] GetCumulativeTimeArray(IReadOnlyList<double> timeSteps, bool includeZero = false)
         {
+            int offset = includeZero ? 1 : 0;
+            double[] cumulative = new double[timeSteps.Count + offset];
+
+            double runningTotal = 0.0;
+            for (int i = 0; i < timeSteps.Count; i++)
+            {
+                runningTotal += timeSteps[i];
+                cumulative[i + offset] = runningTotal;
+            }
+
+            return cumulative;
+        }
+
+        public void Simulate(double[] ResultTime = null)
+        {
+            if(ResultTime == null) ResultTime = GetCumulativeTimeArray(DATA.TimeSteps);
             int cores = Environment.ProcessorCount, chunkSize = Ngrids / cores;
 
             (int totalDofs, int[] col_index, int[] row_ptr, double[] JacValues) = ReservoirJacobian.Create(2, Grids, Wells);
@@ -597,8 +611,8 @@ namespace ReservoirSimulator
                                                     : isOilTarget ? rate_oil
                                                     : rate_oil + rate_water;
 
-                                    JacValues[wOff.RowFlow_dGrid[p][0]] -= perfRate.Derivative[2];
-                                    JacValues[wOff.RowFlow_dGrid[p][1]] -= perfRate.Derivative[3];
+                                    JacValues[wOff.RowFlow_dGrid[p][0]] -= perfRate.Derivative[2] * dt;
+                                    JacValues[wOff.RowFlow_dGrid[p][1]] -= perfRate.Derivative[3] * dt;
 
                                     well.Qo += rate_oil;  well.Qw += rate_water;
                                 }
@@ -608,10 +622,10 @@ namespace ReservoirSimulator
                                                          : isOilTarget ? well.Qo
                                                          : well.Ql;
 
-                                ADiff<Vector4d> RateRes = qwell - wellRate;
-                                Res[rowflow] += RateRes.Value;
-                                JacValues[wOff.RowFlow_dPwell] += RateRes.Derivative[0];
-                                JacValues[wOff.RowFlow_dQwell] += RateRes.Derivative[1];
+                                ADiff<Vector4d> FlowRes = (qwell - wellRate)*dt;
+                                Res[rowflow] += FlowRes.Value;
+                                JacValues[wOff.RowFlow_dPwell] += FlowRes.Derivative[0];
+                                JacValues[wOff.RowFlow_dQwell] += FlowRes.Derivative[1];
                                 break;
                             }
 
@@ -626,11 +640,11 @@ namespace ReservoirSimulator
                                     if (!well.PerfIsOpen[p] || !mgrid.isActive) continue;
 
                                     int i = mgrid.ActiveIndex;
-                                    int indx1 = 2 * i + 0;
-                                    int indx2 = 2 * i + 1;
+                                    int row_o = 2 * i + 0;
+                                    int row_w = 2 * i + 1;
 
-                                    var Po_m = new ADiff<Vector4d>(xnp1[indx1], new(0, 0, 1, 0));
-                                    var Sw_m = new ADiff<Vector4d>(xnp1[indx2], new(0, 0, 0, 1));
+                                    var Po_m = new ADiff<Vector4d>(xnp1[row_o], new(0, 0, 1, 0));
+                                    var Sw_m = new ADiff<Vector4d>(xnp1[row_w], new(0, 0, 0, 1));
                                     var Pw_m = Po_m - mgrid.Pcow(Sw_m);
 
                                     var Bw_m = mgrid.Bw(Pw_m);
@@ -649,7 +663,7 @@ namespace ReservoirSimulator
                                     var rate_water = WIw * DΦw;
 
                                     // Reservoir water equation (injection is inflow: rate * dt)
-                                    Res[indx2] += rate_water.Value * dt;
+                                    Res[row_w] += rate_water.Value * dt;
 
                                     JacValues[wOff.Rm_dPwell[p][1]] += rate_water.Derivative[0] * dt;
 
@@ -657,17 +671,17 @@ namespace ReservoirSimulator
                                     JacValues[cOff.Diag[2]] += rate_water.Derivative[2] * dt;
                                     JacValues[cOff.Diag[3]] += rate_water.Derivative[3] * dt;
 
-                                    JacValues[wOff.RowFlow_dGrid[p][0]] -= rate_water.Derivative[2];
-                                    JacValues[wOff.RowFlow_dGrid[p][1]] -= rate_water.Derivative[3];
+                                    JacValues[wOff.RowFlow_dGrid[p][0]] -= rate_water.Derivative[2] * dt;
+                                    JacValues[wOff.RowFlow_dGrid[p][1]] -= rate_water.Derivative[3] * dt;
 
                                     well.Qw += rate_water;
                                 }
 
                                 // Close Row Q using well.Qw
-                                ADiff<Vector4d> RateRes = qwell - well.Qw;
-                                Res[rowflow] += RateRes.Value;
-                                JacValues[wOff.RowFlow_dPwell] += RateRes.Derivative[0];
-                                JacValues[wOff.RowFlow_dQwell] += RateRes.Derivative[1];
+                                ADiff<Vector4d> FlowRes = (qwell - well.Qw) * dt;
+                                Res[rowflow] += FlowRes.Value;
+                                JacValues[wOff.RowFlow_dPwell] += FlowRes.Derivative[0];
+                                JacValues[wOff.RowFlow_dQwell] += FlowRes.Derivative[1];
                                 break;
                             }
 
@@ -767,10 +781,9 @@ namespace ReservoirSimulator
             double t = 0.0, dt = 0.1, dtCarry = 0.1;
             DateTime startDate = DATA.StartDate, currentSimDate;
             List<DateTime> Interval = [.. new DateTime[] { startDate }
-                                .Concat(Wells.SelectMany(well => well.GetEventTimes().Select(date=>date.AddSeconds(-1))))
+                                .Concat(Wells.SelectMany(well => well.GetEventTimes().Select(date => date.AddSeconds(-1))))
                                 .Concat(ResultTime.Select(t => startDate.AddDays(t).AddSeconds(-1)))
-                                .Distinct()
-                                .Order()];
+                                .Distinct().Where(date=>date>=startDate).Order()];
 
             Console.WriteLine($"""
                 Total Grids = {Ngrids}, Active Grids = {NumActiveGrids}
@@ -886,7 +899,7 @@ namespace ReservoirSimulator
                             well.CurrentProducerControl is { } prod &&
                             well.ConstraintType != ConstraintType.MIN_BHP &&
                             prod.MinBhpLimit > 0.0 &&
-                            well.Pwf.Value < (prod.MinBhpLimit - 1e-2))
+                            well.Pwf_np1 < (prod.MinBhpLimit - 1e-2))
                         {
                             well.ConstraintType = ConstraintType.MIN_BHP;
                             Console.WriteLine($"""
@@ -913,7 +926,8 @@ namespace ReservoirSimulator
                         }
                     }
                     if (Wells.Any(well => well.Control_is_Violated))
-                    { 
+                    {
+                        tryingnewtimestep = false;
                         foreach(var well in Wells)
                             well.Control_is_Violated = false;
                         continue;

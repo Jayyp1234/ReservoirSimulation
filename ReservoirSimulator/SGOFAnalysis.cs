@@ -40,7 +40,7 @@ namespace ReservoirSimulator
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public ADiff<T> EvaluatePcgo<T>(ADiff<T> sg) where T : struct, IVectorND<T>
+        public ADiff<T> EvaluatePcog<T>(ADiff<T> sg) where T : struct, IVectorND<T>
         {
             // Gas-oil capillary expansion operates via scaled gas track projection
             ADiff<T> sgStar = sg / (1.0 - Swi);
@@ -56,10 +56,9 @@ namespace ReservoirSimulator
         public double Pcg { get; set; } = Utility.Convert(pcg, "Pressure", incomingUnit, Units.FIELD);
     }
 
-    public class SGOFAnalysis(List<double> _sgof, Units incomingUnit)
+    public class SGOFAnalysis(List<List<double>> _sgof, Units incomingUnit)
     {
-        public readonly List<SgofRow> sgofTable = [..Enumerable.Range(0, _sgof.Count/4).
-            Select(i => new SgofRow(_sgof[4*i+0], _sgof[4*i+1], _sgof[4*i+2], _sgof[4*i+3], incomingUnit))];
+        public readonly List<SgofRow> sgofTable = [.._sgof.Select(sgof => new SgofRow(sgof[0], sgof[1], sgof[2], sgof[3], incomingUnit))];
 
         public SgofResult Result { get; private set; }
 

@@ -21,9 +21,17 @@ namespace ReservoirSimulator
         {
             return Bwref * Exp(-cw * (p - Pref));
         }
+        public double EvaluateBw(double p)
+        {
+            return Bwref * Exp(-cw * (p - Pref));
+        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluateMuw<T>(ADiff<T> p) where T : struct, IVectorND<T>
+        {
+            return Muref * Exp(vw * (p - Pref));
+        }
+        public double EvaluateMuw(double p)
         {
             return Muref * Exp(vw * (p - Pref));
         }

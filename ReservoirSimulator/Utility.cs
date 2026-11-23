@@ -355,9 +355,10 @@ namespace ReservoirSimulator
             foreach (var grid in Grids)
             {
                 if (!grid.isActive) continue;
-                grid.Bo = Po => pvdo[Pvtnum[grid.GlobalIndex]].Result.EvaluateBo(Po);
-                grid.μo = Po => pvdo[Pvtnum[grid.GlobalIndex]].Result.EvaluateMuo(Po);
-                grid.γo = Po => γo0 / pvdo[Pvtnum[grid.GlobalIndex]].Result.EvaluateBo(Po);
+                int n = Pvtnum[grid.GlobalIndex];   
+                grid.Bo = Po => pvdo[n].Result.EvaluateBo(Po);
+                grid.μo = Po => pvdo[n].Result.EvaluateMuo(Po);
+                grid.γo = Po => γo0 / pvdo[n].Result.EvaluateBo(Po);
             }
         }
 
@@ -366,9 +367,10 @@ namespace ReservoirSimulator
             foreach (var grid in Grids)
             {
                 if (!grid.isActive) continue;
-                grid.Bg = Pg => pvdg[Pvtnum[grid.GlobalIndex]].Result.EvaluateBg(Pg);
-                grid.μg = Pg => pvdg[Pvtnum[grid.GlobalIndex]].Result.EvaluateMug(Pg);
-                grid.γg = Pg => γg0 / pvdg[Pvtnum[grid.GlobalIndex]].Result.EvaluateBg(Pg);
+                int n = Pvtnum[grid.GlobalIndex];
+                grid.Bg = Pg => pvdg[n].Result.EvaluateBg(Pg);
+                grid.μg = Pg => pvdg[n].Result.EvaluateMug(Pg);
+                grid.γg = Pg => γg0 / pvdg[n].Result.EvaluateBg(Pg);
             }
         }
 
@@ -376,11 +378,12 @@ namespace ReservoirSimulator
         {
             foreach (var grid in Grids)
             {
-                if (!grid.isActive) continue;
-                grid.Rs = Po => pvto[Pvtnum[grid.GlobalIndex]].Result.EvaluateRs(Po);
-                grid.Bo = Rs => pvto[Pvtnum[grid.GlobalIndex]].Result.EvaluateBo(Rs);
-                grid.μo = Rs => pvto[Pvtnum[grid.GlobalIndex]].Result.EvaluateMuo(Rs);
-                grid.γo = Rs => (γo0 + 0.178 * Rs * γg0) / pvto[Pvtnum[grid.GlobalIndex]].Result.EvaluateBo(Rs);
+                //if (!grid.isActive) continue;
+                //int n = Pvtnum[grid.GlobalIndex];
+                //grid.Rs = Po => pvto[n].Result.EvaluateRs(Po);
+                //grid.Bo = Rs => pvto[n].Result.EvaluateBo(Rs);
+                //grid.μo = Rs => pvto[n].Result.EvaluateMuo(Rs);
+                //grid.γo = Rs => (γo0 + 0.178 * Rs * γg0) / pvto[n].Result.EvaluateBo(Rs);
             }
         }
 
@@ -389,10 +392,11 @@ namespace ReservoirSimulator
             foreach (var grid in Grids)
             {
                 if (!grid.isActive) continue;
-                grid.Rv = Pg => pvtg[Pvtnum[grid.GlobalIndex]].Result.EvaluateRv(Pg);
-                grid.Bg = Rv => pvtg[Pvtnum[grid.GlobalIndex]].Result.EvaluateBg(Rv);
-                grid.μg = Rv => pvtg[Pvtnum[grid.GlobalIndex]].Result.EvaluateMug(Rv);
-                grid.γg = Rv => (γg0 + 5.615 * Rv * γo0) / pvtg[Pvtnum[grid.GlobalIndex]].Result.EvaluateBg(Rv);
+                int n = Pvtnum[grid.GlobalIndex];
+                grid.Rv = Pg => pvtg[n].Result.EvaluateRv(Pg);
+                grid.Bg = Rv => pvtg[n].Result.EvaluateBg(Rv);
+                grid.μg = Rv => pvtg[n].Result.EvaluateMug(Rv);
+                grid.γg = Rv => (γg0 + 5.615 * Rv * γo0) / pvtg[n].Result.EvaluateBg(Rv);
             }
         }
 
@@ -401,9 +405,10 @@ namespace ReservoirSimulator
             foreach (var grid in Grids)
             {
                 if (!grid.isActive) continue;
-                grid.Bw = Pw => pvtw[Pvtnum[grid.GlobalIndex]].Result.EvaluateBw(Pw);
-                grid.μw = Pw => pvtw[Pvtnum[grid.GlobalIndex]].Result.EvaluateMuw(Pw);
-                grid.γw = Pw => γw0 / pvtw[Pvtnum[grid.GlobalIndex]].Result.EvaluateBw(Pw);
+                int n = Pvtnum[grid.GlobalIndex];
+                grid.Bw = Pw => pvtw[n].Result.EvaluateBw(Pw);
+                grid.μw = Pw => pvtw[n].Result.EvaluateMuw(Pw);
+                grid.γw = Pw => γw0 / pvtw[n].Result.EvaluateBw(Pw);
             }
         }
 
@@ -412,9 +417,10 @@ namespace ReservoirSimulator
             foreach (var grid in Grids)
             {
                 if (!grid.isActive) continue;
-                grid.Krw = Sw => swof[Satnum[grid.GlobalIndex]].Result.EvaluateKrw(Sw);
-                grid.Krow = Sw => swof[Satnum[grid.GlobalIndex]].Result.EvaluateKrow(Sw);
-                grid.Pcow = Sw => swof[Satnum[grid.GlobalIndex]].Result.EvaluatePcow(Sw);
+                int n = Satnum[grid.GlobalIndex];   
+                grid.Krw = Sw => swof[n].Result.EvaluateKrw(Sw);
+                grid.Krow = Sw => swof[n].Result.EvaluateKrow(Sw);
+                grid.Pcow = Sw => swof[n].Result.EvaluatePcow(Sw);
             }
         }
 
@@ -423,9 +429,10 @@ namespace ReservoirSimulator
             foreach (var grid in Grids)
             {
                 if (!grid.isActive) continue;
-                grid.Krg = Sg => sgof[Satnum[grid.GlobalIndex]].Result.EvaluateKrg(Sg);
-                grid.Krog = Sg => sgof[Satnum[grid.GlobalIndex]].Result.EvaluateKrog(Sg);
-                grid.Pcgo = Sg => sgof[Satnum[grid.GlobalIndex]].Result.EvaluatePcgo(Sg);
+                int n = Satnum[grid.GlobalIndex];
+                grid.Krg = Sg => sgof[n].Result.EvaluateKrg(Sg);
+                grid.Krog = Sg => sgof[n].Result.EvaluateKrog(Sg);
+                grid.Pcog = Sg => sgof[n].Result.EvaluatePcog(Sg);
             }
         }
 
@@ -514,46 +521,52 @@ namespace ReservoirSimulator
         {
             int nxny = nx * ny, ngrids = nxny * nz;
             Grid<T>[] Grids = new Grid<T>[ngrids];
-            for (int m = 0; m < ngrids; m++)
+            for (int k = 0; k < nz; k++)
             {
-                int k = m / nxny, rem = m % nxny,
-                    j = rem / nx, i = rem % nx;
-                var K = Enumerable.Range(0, k);
-                var J = Enumerable.Range(0, j);
-                var I = Enumerable.Range(0, i);
-                Grids[m] = new Grid<T>
+                for (int j = 0; j < ny; j++)
                 {
-                    IJKIndex = (i, j, k),
-                    NTG = 1.0,
-                    Porosity = Φ[m],
-                    Corners = new Vector3d[8]
-                };
-                Grids[m].Faces[0].Permeability = permz[m];
-                Grids[m].Faces[1].Permeability = permy[m];
-                Grids[m].Faces[2].Permeability = permx[m];
-                Grids[m].Faces[3].Permeability = permx[m];
-                Grids[m].Faces[4].Permeability = permy[m];
-                Grids[m].Faces[5].Permeability = permz[m];
-                double zlo = zTop[j * nx + i] + K.Select(k => dz[i + j * nx + k * nxny]).Sum();
-                double zhi = zlo - dz[m];
-                double xhi = I.Select(i => dx[i + j * nx + k * nxny]).Sum();
-                double xlo = xhi - dx[m];
-                double yhi = J.Select(j => dy[i + j * nx + k * nxny]).Sum();
-                double ylo = yhi - dy[m];
+                    for (int i = 0; i < nx; i++)
+                    {
+                        int m = i + j * nx + k * nxny;
+                        var I = Enumerable.Range(0, i + 1);
+                        var J = Enumerable.Range(0, j + 1);
+                        var K = Enumerable.Range(0, k + 1);
+                        Grids[m] = new Grid<T>
+                        {
+                            IJKIndex = (i, j, k),
+                            NTG = 1.0,
+                            Porosity = Φ[m],
+                            Corners = new Vector3d[8]
+                        };
+                        Grids[m].Faces[0].Permeability = permz[m];
+                        Grids[m].Faces[1].Permeability = permy[m];
+                        Grids[m].Faces[2].Permeability = permx[m];
+                        Grids[m].Faces[3].Permeability = permx[m];
+                        Grids[m].Faces[4].Permeability = permy[m];
+                        Grids[m].Faces[5].Permeability = permz[m];
+                        double zlo = zTop[j * nx + i] + K.Select(k => dz[i + j * nx + k * nxny]).Sum();
+                        double zhi = zlo - dz[m];
+                        double xhi = I.Select(i => dx[i + j * nx + k * nxny]).Sum();
+                        double xlo = xhi - dx[m];
+                        double yhi = J.Select(j => dy[i + j * nx + k * nxny]).Sum();
+                        double ylo = yhi - dy[m];
 
-                // Extract the 8 structural corner points for a Hexahedron matching VTK specifications
-                // Bottom plane points (Z-Upper)
-                Grids[m].Corners[0] = new Vector3d(xlo, ylo, zhi);     // Point 0
-                Grids[m].Corners[1] = new Vector3d(xhi, ylo, zhi);     // Point 1
-                Grids[m].Corners[2] = new Vector3d(xhi, yhi, zhi);     // Point 2
-                Grids[m].Corners[3] = new Vector3d(xlo, yhi, zhi);     // Point 3
-                // Top plane points (Z-Lower)
-                Grids[m].Corners[4] = new Vector3d(xlo, ylo, zlo);     // Point 4
-                Grids[m].Corners[5] = new Vector3d(xhi, ylo, zlo);     // Point 5
-                Grids[m].Corners[6] = new Vector3d(xhi, yhi, zlo);     // Point 6
-                Grids[m].Corners[7] = new Vector3d(xlo, yhi, zlo);     // Point 7
-                Grids[m].MakeFaces();
+                        // Extract the 8 structural corner points for a Hexahedron matching VTK specifications
+                        // Bottom plane points (Z-Upper)
+                        Grids[m].Corners[0] = new Vector3d(xlo, ylo, zhi);     // Point 0
+                        Grids[m].Corners[1] = new Vector3d(xhi, ylo, zhi);     // Point 1
+                        Grids[m].Corners[2] = new Vector3d(xhi, yhi, zhi);     // Point 2
+                        Grids[m].Corners[3] = new Vector3d(xlo, yhi, zhi);     // Point 3
+                                                                               // Top plane points (Z-Lower)
+                        Grids[m].Corners[4] = new Vector3d(xlo, ylo, zlo);     // Point 4
+                        Grids[m].Corners[5] = new Vector3d(xhi, ylo, zlo);     // Point 5
+                        Grids[m].Corners[6] = new Vector3d(xhi, yhi, zlo);     // Point 6
+                        Grids[m].Corners[7] = new Vector3d(xlo, yhi, zlo);     // Point 7
+                        Grids[m].MakeFaces();
+                    }
+                }
             }
+            
             return Grids;
         }
 

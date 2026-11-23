@@ -27,46 +27,62 @@ namespace ReservoirSimulator
         public readonly double UndersatCompressibility = undersatCompressibility;
         public readonly double UndersatViscosibility = undersatViscosibility;
 
-        // High-Performance Inlined Mathematical Models (Saturated Bubble-Point Curve)
+        // High-Performance Mathematical Models (Saturated Bubble-Point Curve)
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluateRs<T>(ADiff<T> p) where T : struct, IVectorND<T>
         {
+            if (p.Value <= 0.0 || RsBase <= 0.0)
+                return default;
+
             return RsBase * Pow(p, RsExponent);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluateBubblePointPressure<T>(ADiff<T> rs) where T : struct, IVectorND<T>
         {
+            if (rs.Value <= 0.0 || RsBase <= 0.0)
+                return default;
+
             return Pow(rs / RsBase, 1.0 / RsExponent);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public ADiff<T> EvaluateBo<T>(ADiff<T> rs) where T : struct, IVectorND<T>
+        ADiff<T> EvaluateBo<T>(ADiff<T> rs) where T : struct, IVectorND<T>
         {
             return BoBase * Exp(BoExponent * rs);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public ADiff<T> EvaluateMuo<T>(ADiff<T> rs) where T : struct, IVectorND<T>
+        ADiff<T> EvaluateMuo<T>(ADiff<T> rs) where T : struct, IVectorND<T>
         {
             return ViscBase * Exp(-ViscExponent * rs);
         }
 
-        // 2D Undersaturated Oil Extensions: (P, Rs) where P >= Pbub(Rs)
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        // 2D Oil Extensions: follows saturated curve for P <= Pbub(Rs), undersaturated exponential for P > Pbub(Rs)
         public ADiff<T> EvaluateBo<T>(ADiff<T> p, ADiff<T> rs) where T : struct, IVectorND<T>
         {
+            if (RsBase <= 0.0)
+                return BoBase * Exp(-UndersatCompressibility * Max(0.0, p - 14.7));
+
+            ADiff<T> pb = EvaluateBubblePointPressure(rs);
+            if (p.Value <= pb.Value)
+                return EvaluateBo(EvaluateRs(p));
+
             ADiff<T> boSat = EvaluateBo(rs);
-            ADiff<T> dpOver = p - EvaluateBubblePointPressure(rs); // 0 on bubble-point curve, > 0 when undersaturated
-            return boSat * Exp(-UndersatCompressibility * dpOver);
+            return boSat * Exp(-UndersatCompressibility * (p - pb));
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluateMuo<T>(ADiff<T> p, ADiff<T> rs) where T : struct, IVectorND<T>
         {
+            if (RsBase <= 0.0)
+                return ViscBase * Exp(UndersatViscosibility * Max(0.0, p - 14.7));
+
+            ADiff<T> pb = EvaluateBubblePointPressure(rs);
+            if (p.Value <= pb.Value)
+                return EvaluateMuo(EvaluateRs(p));
+
             ADiff<T> muSat = EvaluateMuo(rs);
-            ADiff<T> dpOver = p - EvaluateBubblePointPressure(rs);
-            return muSat * Exp(UndersatViscosibility * dpOver);
+            return muSat * Exp(UndersatViscosibility * (p - pb));
         }
     }
 
@@ -158,9 +174,7 @@ namespace ReservoirSimulator
 
             if (undersaturatedPairs.Count > 0)
             {
-                List<double> dP = [];
-                List<double> dLnBo = [];
-                List<double> dLnVisc = [];
+                List<double> dP = [], dLnBo = [], dLnVisc = [];
 
                 foreach (var (sat, undersat) in undersaturatedPairs)
                 {

@@ -7,7 +7,7 @@ using System.Text;
 {
     // 1. Define the path to your master ECLIPSE file (.DATA or .GRDECL)
     // If testing with the Norne deck, point it to your local file path
-    string masterDeckPath = @"C:\Users\lateef.a.kareem\Documents\GitHub\opm-data\norne\NORNE_ATW2013.DATA";
+    string masterDeckPath = @"C:\Users\lateef.a.kareem\Documents\New folder\SPE1CASE1.DATA";
 
     Console.WriteLine("==================================================");
     Console.WriteLine("        LAUNCHING ECLIPSE INGESTION PIPELINE     ");
@@ -46,7 +46,7 @@ using System.Text;
     OilWaterReservoir Reservoir = new(parsedDeck);
     tic();
     Reservoir.Initialize();
-    Reservoir.Simulate([0, 3650]);
+    Reservoir.Simulate();
     Console.WriteLine($"Simulation took {toc()} sec");
 
     string outputdir = @"C:\Users\lateef.a.kareem\Documents\SimulationResult";
