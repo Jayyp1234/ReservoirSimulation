@@ -1,4 +1,5 @@
-﻿using SepalSolver;
+﻿using EclipseDeckReader;
+using SepalSolver;
 using System.Runtime.CompilerServices;
 using static ReservoirSimulator.Math;
 using UnitSystem.Parsing;
@@ -825,6 +826,111 @@ namespace ReservoirSimulator
                 f.GridIndices.Add(neighborGlobalIdx);
                 f.Transmissibility.Add(trans);
             }
+        }
+
+        // ---------------------------------------------------------------------------------------------
+        // Transmissibility multipliers: MULTX/MULTY/MULTZ, MULTFLT (on the FAULTS faces) and MULTREGT.
+        // They all multiply, as in ECLIPSE. Face index: 0 -I, 1 +I, 2 -J, 3 +J, 4 -K, 5 +K.
+        // ---------------------------------------------------------------------------------------------
+        internal static void ApplyTransmissibilityMultipliers<T>(Grid<T>[] Grids, int nx, int ny, int nz, EclipseDataDeck deck)
+            where T : struct, IVectorND<T>
+        {
+            int Idx(int i, int j, int k) => i + nx * (j + ny * k);
+            int total = nx * ny * nz;
+
+            // 1. MULTX, MULTY, MULTZ: the value on cell (i,j,k) multiplies its connections across its +I, +J, +K face
+            List<double>[] mult = [deck.MultXArray, deck.MultYArray, deck.MultZArray];
+            for (int d = 0; d < 3; d++)
+            {
+                if (mult[d].Count != total) continue;
+                for (int m = 0; m < total; m++)
+                    if (mult[d][m] != 1.0) ScaleFace(Grids, m, 2 * d + 1, mult[d][m]);
+            }
+
+            // 2. MULTFLT: every cell face listed under the fault in FAULTS
+            foreach (var (name, fault) in deck.Faults)
+            {
+                if (fault.TransmissibilityMultiplier == 1.0) continue;
+                foreach (var s in fault.Segments)
+                {
+                    int f = FaultFaceIndex(s.Face);
+                    if (f < 0) { Console.WriteLine($"      [Warning] FAULTS '{name}': face '{s.Face}' not recognised; record skipped."); continue; }
+                    for (int k = s.KStart; k <= s.KEnd; k++)
+                        for (int j = s.JStart; j <= s.JEnd; j++)
+                            for (int i = s.IStart; i <= s.IEnd; i++)
+                                if (i >= 1 && i <= nx && j >= 1 && j <= ny && k >= 1 && k <= nz)
+                                    ScaleFace(Grids, Idx(i - 1, j - 1, k - 1), f, fault.TransmissibilityMultiplier);
+                }
+            }
+
+            // 3. MULTREGT: connections between two different regions. Each connection is visited once, from the
+            //    + face (1, 3, 5) of the cell it was registered on.
+            if (deck.MultregtRecords.Count == 0) return;
+            for (int m = 0; m < total; m++)
+            {
+                var g = Grids[m];
+                if (!g.isActive) continue;
+                for (int f = 1; f < 6; f += 2)
+                {
+                    var face = g.Faces[f];
+                    for (int c = 0; c < face.GridIndices.Count; c++)
+                    {
+                        int n = face.GridIndices[c];
+                        var (i1, j1, k1) = g.IJKIndex; var (i2, j2, k2) = Grids[n].IJKIndex;
+                        bool neighbour = Abs(i1 - i2) + Abs(j1 - j2) + Abs(k1 - k2) == 1;   // otherwise a non-neighbour connection
+                        double factor = MultregtFactor(deck, m, n, "XYZ"[f / 2], neighbour);
+                        if (factor != 1.0) ScaleConnection(Grids, m, f, c, factor);
+                    }
+                }
+            }
+        }
+
+        // The last MULTREGT record that matches the two regions (either way round), the direction and the connection
+        // type is the one that applies. Regions come from MULTNUM, or FLUXNUM when the record's flag is F.
+        static double MultregtFactor(EclipseDataDeck deck, int a, int b, char direction, bool neighbour)
+        {
+            for (int r = deck.MultregtRecords.Count - 1; r >= 0; r--)
+            {
+                var rec = deck.MultregtRecords[r];
+                var region = rec.RegionFlag.StartsWith('F') ? deck.FluxnumArray : deck.MultnumArray;
+                int ra = a < region.Count ? region[a] : 1, rb = b < region.Count ? region[b] : 1;
+                if (ra == rb) continue;   // MULTREGT acts only between different regions
+
+                bool Is(int wanted, int actual) => wanted <= 0 || wanted == actual;   // a defaulted region matches any
+                bool regions = Is(rec.FromRegion, ra) && Is(rec.ToRegion, rb) || Is(rec.FromRegion, rb) && Is(rec.ToRegion, ra);
+                if (!regions || !rec.Direction.Contains(direction)) continue;
+                if (rec.ConnectionType == "NNC" && neighbour || rec.ConnectionType == "NONNNC" && !neighbour) continue;
+                return rec.Multiplier;
+            }
+            return 1.0;
+        }
+
+        // FAULTS face: X (or I) is the face towards I+1, X- towards I-1; likewise Y/J and Z/K
+        static int FaultFaceIndex(string face) => face switch
+        {
+            "X" or "I" => 1, "X-" or "I-" => 0,
+            "Y" or "J" => 3, "Y-" or "J-" => 2,
+            "Z" or "K" => 5, "Z-" or "K-" => 4,
+            _ => -1
+        };
+
+        static void ScaleFace<T>(Grid<T>[] Grids, int m, int f, double factor) where T : struct, IVectorND<T>
+        {
+            for (int c = 0; c < Grids[m].Faces[f].GridIndices.Count; c++)
+                ScaleConnection(Grids, m, f, c, factor);
+        }
+
+        // A connection is stored on both of its cells (face f of cell m, and the opposite face f ^ 1 of the neighbour).
+        // Both copies are scaled so the flow from m to n stays equal and opposite to the flow from n to m.
+        static void ScaleConnection<T>(Grid<T>[] Grids, int m, int f, int c, double factor) where T : struct, IVectorND<T>
+        {
+            var face = Grids[m].Faces[f];
+            int n = face.GridIndices[c];
+            face.Transmissibility[c] *= factor;
+
+            var back = Grids[n].Faces[f ^ 1];
+            int b = back.GridIndices.IndexOf(m);
+            if (b >= 0) back.Transmissibility[b] *= factor;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

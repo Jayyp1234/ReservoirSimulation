@@ -44,6 +44,7 @@ namespace EclipseDeckReader
                 if (tokens[i].Type == TokenType.Keyword)
                 {
                     string keyword = tokens[i].Content.ToString().ToUpperInvariant();
+                    int keywordIndex = i;
                     i++;
 
                     ClearLeadingLayoutSpacers(tokens, ref i);
@@ -372,7 +373,9 @@ namespace EclipseDeckReader
                             break;
 
                         default:
-                            if (section != "SUMMARY" && !IsOutputOrSizingKeyword(keyword))
+                            // A real keyword stands alone on its line; upper-case words beside other values (TOP, YES)
+                            // are data of an unsupported keyword that the tokenizer also marks as keywords.
+                            if (section != "SUMMARY" && !IsOutputOrSizingKeyword(keyword) && IsAloneOnLine(tokens, keywordIndex))
                                 Console.WriteLine($"      [Warning] Keyword '{keyword}' is not supported and was skipped; the results do not include it.");
                             SkipUnhandledKeywordPayload(tokens, ref i);
                             break;
@@ -389,7 +392,12 @@ namespace EclipseDeckReader
         private static bool IsOutputOrSizingKeyword(string keyword) =>
             keyword.EndsWith("DIMS") || keyword.StartsWith("RPT") ||
             keyword is "INIT" or "UNIFIN" or "UNIFOUT" or "FMTIN" or "FMTOUT" or "NOSIM" or "MESSAGES" or "NSTACK"
-                    or "GRIDFILE" or "NOINSPEC" or "NORSSPEC" or "MONITOR" or "NOMONITO" or "SAVE" or "NOGGF" or "GRIDUNIT";
+                    or "GRIDFILE" or "NOINSPEC" or "NORSSPEC" or "MONITOR" or "NOMONITO" or "SAVE" or "NOGGF" or "GRIDUNIT"
+                    or "FAULTDIM" or "GRIDOPTS" or "MAPAXES" or "MAPUNITS" or "FIPNUM" or "WRFTPLT";
+
+        private static bool IsAloneOnLine(List<Token> tokens, int index) =>
+            (index == 0 || tokens[index - 1].Type == TokenType.NewLine) &&
+            (index + 1 >= tokens.Count || tokens[index + 1].Type == TokenType.NewLine);
 
         private static void SkipUnhandledKeywordPayload(List<Token> tokens, ref int index)
         {
@@ -1263,54 +1271,77 @@ namespace EclipseDeckReader
             if (index < tokens.Count && tokens[index].Type == TokenType.Slash) index++;
         }
 
+        // FAULTS: 'NAME' I1 I2 J1 J2 K1 K2 FACE / ... ending with a lone '/'. A fault usually has many records,
+        // so each one is added to the fault's segments (the old code replaced the fault each time, keeping only the
+        // last record) and the face is kept whole ("X-" used to become 'X').
         private static void ParseFaultsSection(List<Token> tokens, ref int index, Dictionary<string, FaultRecord> faults)
         {
             int linesRead = 0;
-            while (index < tokens.Count && tokens[index].Type != TokenType.Keyword)
+            foreach (var record in ReadSlashRecords(tokens, ref index))
             {
-                if (tokens[index].Type == TokenType.Slash || tokens[index].Type == TokenType.NewLine) { index++; continue; }
-                if (index + 7 >= tokens.Count) break;
+                if (record.Count < 8) continue;
+                string name = record[0];
 
-                string name = tokens[index].Content.ToString().Trim('\'').Trim('"');
+                int.TryParse(record[1], out int i1);
+                int.TryParse(record[2], out int i2);
+                int.TryParse(record[3], out int j1);
+                int.TryParse(record[4], out int j2);
+                int.TryParse(record[5], out int k1);
+                int.TryParse(record[6], out int k2);
+                string face = record[7].ToUpperInvariant();
 
-                int.TryParse(tokens[index + 1].Content.ToString(), out int i1);
-                int.TryParse(tokens[index + 2].Content.ToString(), out int i2);
-                int.TryParse(tokens[index + 3].Content.ToString(), out int j1);
-                int.TryParse(tokens[index + 4].Content.ToString(), out int j2);
-                int.TryParse(tokens[index + 5].Content.ToString(), out int k1);
-                int.TryParse(tokens[index + 6].Content.ToString(), out int k2);
-
-                string rawFace = tokens[index + 7].Content.ToString().Trim('\'').Trim('"');
-                char face = rawFace.Length > 0 ? rawFace[0] : 'X';
-
-                faults[name] = new FaultRecord { IStart = i1, IEnd = i2, JStart = j1, JEnd = j2, KStart = k1, KEnd = k2, Face = face };
+                if (!faults.TryGetValue(name, out var fault))
+                    faults[name] = fault = new FaultRecord();
+                fault.Segments.Add(new FaultSegment(i1, i2, j1, j2, k1, k2, face));
                 linesRead++;
-                index += 8;
             }
-            Console.WriteLine($"      [Data] FAULTS section processed: {linesRead} structural boundary records mapped.");
+            Console.WriteLine($"      [Data] FAULTS section processed: {linesRead} records in {faults.Count} faults.");
         }
 
+        // MULTFLT: 'NAME' multiplier / ... A name ending in * matches every fault starting with it.
         private static void ParseMultfltSection(List<Token> tokens, ref int index, Dictionary<string, FaultRecord> faults)
         {
             int linesUpdated = 0;
-            while (index < tokens.Count && tokens[index].Type != TokenType.Keyword)
+            foreach (var record in ReadSlashRecords(tokens, ref index))
             {
-                if (tokens[index].Type == TokenType.Slash || tokens[index].Type == TokenType.NewLine) { index++; continue; }
-                if (index + 1 >= tokens.Count) break;
+                if (record.Count < 2 || !double.TryParse(record[1], CultureInfo.InvariantCulture, out double multiplier)) continue;
 
-                string faultName = tokens[index].Content.ToString().Trim('\'').Trim('"');
-
-                if (double.TryParse(tokens[index + 1].Content.ToString(), CultureInfo.InvariantCulture, out double multiplier))
+                string pattern = record[0];
+                foreach (var (name, fault) in faults)
                 {
-                    if (faults.TryGetValue(faultName, out var record))
-                    {
-                        record.TransmissibilityMultiplier = multiplier;
-                        linesUpdated++;
-                    }
+                    bool match = pattern.EndsWith('*')
+                        ? name.StartsWith(pattern.TrimEnd('*'), StringComparison.OrdinalIgnoreCase)
+                        : name.Equals(pattern, StringComparison.OrdinalIgnoreCase);
+                    if (!match) continue;
+                    fault.TransmissibilityMultiplier = multiplier;
+                    linesUpdated++;
                 }
-                index += 2;
             }
             Console.WriteLine($"      [Data] MULTFLT section processed: {linesUpdated} transmissibility overrides applied.");
+        }
+
+        // Reads records of a keyword up to the lone '/' that ends it. Unlike ReadRecordTokensUntilSlash, a record may
+        // hold unquoted names such as F1 or X that the tokenizer marks as keywords.
+        private static List<List<string>> ReadSlashRecords(List<Token> tokens, ref int index)
+        {
+            var records = new List<List<string>>();
+            while (index < tokens.Count)
+            {
+                ClearLeadingLayoutSpacers(tokens, ref index);
+                if (index >= tokens.Count) break;
+                if (tokens[index].Type == TokenType.Slash) { index++; break; }   // lone '/': end of keyword
+
+                var record = new List<string>();
+                while (index < tokens.Count && tokens[index].Type != TokenType.Slash)
+                {
+                    if (tokens[index].Type != TokenType.NewLine)
+                        record.Add(tokens[index].Content.ToString().Trim('\'').Trim('"'));
+                    index++;
+                }
+                index++;   // the record's '/'
+                records.Add(record);
+            }
+            return records;
         }
 
         private static List<string> ReadRecordTokensUntilSlash(List<Token> tokens, ref int index)

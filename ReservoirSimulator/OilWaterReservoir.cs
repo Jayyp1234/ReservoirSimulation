@@ -120,6 +120,7 @@ namespace ReservoirSimulator
 
             // TRANSMISSIBILITY
             Utility.BuildStructuredConnections(Grids, Nx, Ny, Nz);
+            Utility.ApplyTransmissibilityMultipliers(Grids, Nx, Ny, Nz, Data);
             //Utility.ComputeFaceTransmissibility(Grids);
 
 
