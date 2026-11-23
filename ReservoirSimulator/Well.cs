@@ -146,8 +146,8 @@ namespace ReservoirSimulator
 
             double radius = comp.WellBoreDiameter > 0.0 ? comp.WellBoreDiameter * 0.5 : 0.25;
             double skin = comp.EffectiveSkin;
-            double ky = grid.Faces[1].Permeability;
-            double kx = grid.Faces[2].Permeability;
+            double kx = grid.Faces[1].Permeability;   // +I face: PERMX
+            double ky = grid.Faces[2].Permeability;   // -J face: PERMY
 
             double re = 0.28 * Hypot(Pow(ky / kx, 0.25) * DX, Pow(kx / ky, 0.25) * DY) /
                                (Pow(ky / kx, 0.25) + Pow(kx / ky, 0.25));

@@ -542,11 +542,12 @@ namespace ReservoirSimulator
                             Porosity = Φ[m],
                             Corners = new Vector3d[8]
                         };
-                        Grids[m].Faces[0].Permeability = permz[m];
-                        Grids[m].Faces[1].Permeability = permy[m];
-                        Grids[m].Faces[2].Permeability = permx[m];
-                        Grids[m].Faces[3].Permeability = permx[m];
-                        Grids[m].Faces[4].Permeability = permy[m];
+                        // Same face order as the corner-point builder: 0,1 = -I,+I; 2,3 = -J,+J; 4,5 = -K,+K
+                        Grids[m].Faces[0].Permeability = permx[m];
+                        Grids[m].Faces[1].Permeability = permx[m];
+                        Grids[m].Faces[2].Permeability = permy[m];
+                        Grids[m].Faces[3].Permeability = permy[m];
+                        Grids[m].Faces[4].Permeability = permz[m];
                         Grids[m].Faces[5].Permeability = permz[m];
                         double zlo = zTop[j * nx + i] + K.Select(k => dz[i + j * nx + k * nxny]).Sum();
                         double zhi = zlo - dz[m];
