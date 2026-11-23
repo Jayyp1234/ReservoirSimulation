@@ -8,6 +8,12 @@ namespace EclipseDeckReader
 {
     public sealed class DeckReader
     {
+        // Current BOX (1-based, inclusive) set by BOX and cleared by ENDBOX; null means the whole grid.
+        private (int I1, int I2, int J1, int J2, int K1, int K2)? box;
+
+        // Section being read (RUNSPEC, GRID, ..., SCHEDULE)
+        private string section = "RUNSPEC";
+
         public EclipseDataDeck LoadDeckFile(string filepath)
         {
             var deck = new EclipseDataDeck();
@@ -71,7 +77,8 @@ namespace EclipseDeckReader
                             Console.WriteLine($"      [Runspec] Unit System configured: {deck.UnitSystem}");
                             break;
 
-                        // Standalone section/control/summary flags with no payload and no '/'
+                        // Section headers: remembered so the skip warning below can ignore SUMMARY (output only)
+                        case "RUNSPEC":
                         case "GRID":
                         case "EDIT":
                         case "PROPS":
@@ -79,6 +86,15 @@ namespace EclipseDeckReader
                         case "SOLUTION":
                         case "SUMMARY":
                         case "SCHEDULE":
+                            section = keyword;
+                            break;
+
+                        // The title is free text on the next line, with no '/'
+                        case "TITLE":
+                            while (i < tokens.Count && tokens[i].Type != TokenType.NewLine) i++;
+                            break;
+
+                        // Standalone control/summary flags with no payload and no '/'
                         case "ECHO":
                         case "NOECHO":
                         case "FOPR":
@@ -94,63 +110,84 @@ namespace EclipseDeckReader
                             return;
 
                         case "DX":
-                            deck.DxArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            deck.DxArray = StoreGridArray(deck.DxArray, KeywordExtractor.ExtractDoubleArray(tokens, ref i), deck, 0.0);
                             Console.WriteLine($"      [Data] Current DX array status: {deck.DxArray.Count} entries.");
                             break;
 
                         case "DY":
-                            deck.DyArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            deck.DyArray = StoreGridArray(deck.DyArray, KeywordExtractor.ExtractDoubleArray(tokens, ref i), deck, 0.0);
                             Console.WriteLine($"      [Data] Current DY array status: {deck.DyArray.Count} entries.");
                             break;
 
                         case "DZ":
-                            deck.DzArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            deck.DzArray = StoreGridArray(deck.DzArray, KeywordExtractor.ExtractDoubleArray(tokens, ref i), deck, 0.0);
                             Console.WriteLine($"      [Data] Current DZ array status: {deck.DzArray.Count} entries.");
                             break;
 
                         case "TOPS":
-                            deck.ZtopArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            deck.ZtopArray = StoreGridArray(deck.ZtopArray, KeywordExtractor.ExtractDoubleArray(tokens, ref i), deck, 0.0);
                             Console.WriteLine($"      [Data] Current TOPS (Ztop) array status: {deck.ZtopArray.Count} entries.");
                             break;
 
                         case "PORO":
-                            deck.PorosityArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            deck.PorosityArray = StoreGridArray(deck.PorosityArray, KeywordExtractor.ExtractDoubleArray(tokens, ref i), deck, 0.0);
                             Console.WriteLine($"      [Data] Current PORO array status: {deck.PorosityArray.Count} entries.");
                             break;
 
                         case "PERMX":
-                            deck.PermXArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            deck.PermXArray = StoreGridArray(deck.PermXArray, KeywordExtractor.ExtractDoubleArray(tokens, ref i), deck, 0.0);
                             Console.WriteLine($"      [Data] Current PERMX array status: {deck.PermXArray.Count} entries.");
                             break;
 
                         case "PERMY":
-                            deck.PermYArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            deck.PermYArray = StoreGridArray(deck.PermYArray, KeywordExtractor.ExtractDoubleArray(tokens, ref i), deck, 0.0);
                             Console.WriteLine($"      [Data] Current PERMY array status: {deck.PermYArray.Count} entries.");
                             break;
 
                         case "PERMZ":
-                            deck.PermZArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            deck.PermZArray = StoreGridArray(deck.PermZArray, KeywordExtractor.ExtractDoubleArray(tokens, ref i), deck, 0.0);
                             Console.WriteLine($"      [Data] Current PERMZ array status: {deck.PermZArray.Count} entries.");
                             break;
 
                         case "NTG":
-                            deck.NtgArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            deck.NtgArray = StoreGridArray(deck.NtgArray, KeywordExtractor.ExtractDoubleArray(tokens, ref i), deck, 1.0);
                             Console.WriteLine($"      [Data] Current NTG array status: {deck.NtgArray.Count} entries.");
                             break;
 
                         case "MULTX":
-                            deck.MultXArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            deck.MultXArray = StoreGridArray(deck.MultXArray, KeywordExtractor.ExtractDoubleArray(tokens, ref i), deck, 1.0);
                             Console.WriteLine($"      [Data] Current MULTX array status: {deck.MultXArray.Count} entries.");
                             break;
 
                         case "MULTY":
-                            deck.MultYArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            deck.MultYArray = StoreGridArray(deck.MultYArray, KeywordExtractor.ExtractDoubleArray(tokens, ref i), deck, 1.0);
                             Console.WriteLine($"      [Data] Current MULTY array status: {deck.MultYArray.Count} entries.");
                             break;
 
                         case "MULTZ":
-                            deck.MultZArray = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            deck.MultZArray = StoreGridArray(deck.MultZArray, KeywordExtractor.ExtractDoubleArray(tokens, ref i), deck, 1.0);
                             Console.WriteLine($"      [Data] Current MULTZ array status: {deck.MultZArray.Count} entries.");
+                            break;
+
+                        case "MULTPV":
+                            deck.MultpvArray = StoreGridArray(deck.MultpvArray, KeywordExtractor.ExtractDoubleArray(tokens, ref i), deck, 1.0);
+                            Console.WriteLine($"      [Data] Current MULTPV array status: {deck.MultpvArray.Count} entries.");
+                            break;
+
+                        case "MINPV":
+                            var minpv = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
+                            if (minpv.Count > 0) deck.MinPoreVolume = minpv[0];
+                            Console.WriteLine($"      [Data] MINPV: cells with pore volume below {deck.MinPoreVolume} will be made inactive.");
+                            break;
+
+                        case "BOX":
+                            var b = KeywordExtractor.ExtractIntArray(tokens, ref i);
+                            if (b.Count >= 6) box = (b[0], b[1], b[2], b[3], b[4], b[5]);
+                            Console.WriteLine($"      [Data] BOX set to I:{b.ElementAtOrDefault(0)}-{b.ElementAtOrDefault(1)}, J:{b.ElementAtOrDefault(2)}-{b.ElementAtOrDefault(3)}, K:{b.ElementAtOrDefault(4)}-{b.ElementAtOrDefault(5)}");
+                            break;
+
+                        case "ENDBOX":
+                            box = null;
                             break;
 
                         case "ACTNUM":
@@ -193,6 +230,10 @@ namespace EclipseDeckReader
 
                         case "MULTIPLY":
                             ParseMultiplyModifierBlock(tokens, ref i, deck);
+                            break;
+
+                        case "ADD":
+                            ParseMultiplyModifierBlock(tokens, ref i, deck, add: true);
                             break;
 
                         case "START":
@@ -331,6 +372,8 @@ namespace EclipseDeckReader
                             break;
 
                         default:
+                            if (section != "SUMMARY" && !IsOutputOrSizingKeyword(keyword))
+                                Console.WriteLine($"      [Warning] Keyword '{keyword}' is not supported and was skipped; the results do not include it.");
                             SkipUnhandledKeywordPayload(tokens, ref i);
                             break;
                     }
@@ -341,6 +384,12 @@ namespace EclipseDeckReader
                 }
             }
         }
+
+        // Keywords that only size arrays or control printed/written output; skipping them does not change the results
+        private static bool IsOutputOrSizingKeyword(string keyword) =>
+            keyword.EndsWith("DIMS") || keyword.StartsWith("RPT") ||
+            keyword is "INIT" or "UNIFIN" or "UNIFOUT" or "FMTIN" or "FMTOUT" or "NOSIM" or "MESSAGES" or "NSTACK"
+                    or "GRIDFILE" or "NOINSPEC" or "NORSSPEC" or "MONITOR" or "NOMONITO" or "SAVE" or "NOGGF" or "GRIDUNIT";
 
         private static void SkipUnhandledKeywordPayload(List<Token> tokens, ref int index)
         {
@@ -512,7 +561,8 @@ namespace EclipseDeckReader
 
             InitializeUniformArray(deck.MultXArray, totalCells, 1.0);
             InitializeUniformArray(deck.MultYArray, totalCells, 1.0);
-            InitializeUniformArray(deck.MultZArray, totalCells, 0.1);
+            InitializeUniformArray(deck.MultZArray, totalCells, 1.0);
+            InitializeUniformArray(deck.MultpvArray, totalCells, 1.0);
             InitializeUniformArray(deck.NtgArray, totalCells, 1);
             InitializeUniformArray(deck.ActnumArray, totalCells, 1);
             InitializeUniformArray(deck.SatnumArray, totalCells, 0);
@@ -791,8 +841,10 @@ namespace EclipseDeckReader
             }
         }
 
-        private void ParseMultiplyModifierBlock(List<Token> tokens, ref int index, EclipseDataDeck deck)
+        // MULTIPLY (and ADD when add is true): 'PROP' value [I1 I2 J1 J2 K1 K2] /
+        private void ParseMultiplyModifierBlock(List<Token> tokens, ref int index, EclipseDataDeck deck, bool add = false)
         {
+            string op = add ? "ADD" : "MULTIPLY";
             while (index < tokens.Count)
             {
                 while (index < tokens.Count &&
@@ -811,23 +863,24 @@ namespace EclipseDeckReader
                 if (tokens[index].Type == TokenType.Keyword &&
                     targetProp != "PERMX" && targetProp != "PERMY" && targetProp != "PERMZ" && targetProp != "PORO" &&
                     targetProp != "NTG" && targetProp != "ACTNUM" && targetProp != "MULTX" && targetProp != "MULTY" && targetProp != "MULTZ" &&
-                    targetProp != "DX" && targetProp != "DY" && targetProp != "DZ" && targetProp != "ZTOP" && targetProp != "TOPS")
+                    targetProp != "MULTPV" && targetProp != "DX" && targetProp != "DY" && targetProp != "DZ" && targetProp != "ZTOP" && targetProp != "TOPS")
                 {
                     break;
                 }
+                index++;
 
-                if (index + 7 >= tokens.Count) break;
+                if (index >= tokens.Count) break;
+                double.TryParse(tokens[index].Content.ToString(), CultureInfo.InvariantCulture, out double multiplierValue);
+                index++;
 
-                double.TryParse(tokens[index + 1].Content.ToString(), CultureInfo.InvariantCulture, out double multiplierValue);
-
-                int.TryParse(tokens[index + 2].Content.ToString(), out int iStart);
-                int.TryParse(tokens[index + 3].Content.ToString(), out int iEnd);
-                int.TryParse(tokens[index + 4].Content.ToString(), out int jStart);
-                int.TryParse(tokens[index + 5].Content.ToString(), out int jEnd);
-                int.TryParse(tokens[index + 6].Content.ToString(), out int kStart);
-                int.TryParse(tokens[index + 7].Content.ToString(), out int kEnd);
-
-                index += 8;
+                // The six box numbers are optional: missing ones default to the current BOX, or to the whole grid
+                var (iStart, iEnd, jStart, jEnd, kStart, kEnd) = box ?? (1, deck.NX, 1, deck.NY, 1, deck.NZ);
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int iS)) { iStart = iS; index++; }
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int iE)) { iEnd = iE; index++; }
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int jS)) { jStart = jS; index++; }
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int jE)) { jEnd = jE; index++; }
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int kS)) { kStart = kS; index++; }
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int kE)) { kEnd = kE; index++; }
 
                 while (index < tokens.Count && tokens[index].Type != TokenType.Slash) index++;
                 if (index < tokens.Count && tokens[index].Type == TokenType.Slash) index++;
@@ -839,7 +892,7 @@ namespace EclipseDeckReader
                 }
 
                 int totalCells = deck.NX * deck.NY * deck.NZ;
-                if (targetProp == "ACTNUM" && deck.ActnumArray.Count == totalCells)
+                if (targetProp == "ACTNUM" && !add && deck.ActnumArray.Count == totalCells)
                 {
                     int modificationCount = 0;
                     for (int k = kStart; k <= kEnd; k++)
@@ -871,6 +924,7 @@ namespace EclipseDeckReader
                     "MULTX" => deck.MultXArray,
                     "MULTY" => deck.MultYArray,
                     "MULTZ" => deck.MultZArray,
+                    "MULTPV" => deck.MultpvArray,
                     "DX" => deck.DxArray,
                     "DY" => deck.DyArray,
                     "DZ" => deck.DzArray,
@@ -890,13 +944,14 @@ namespace EclipseDeckReader
                                 int flatIndex = (k - 1) * deck.NX * deck.NY + (j - 1) * deck.NX + (i - 1);
                                 if (flatIndex >= 0 && flatIndex < totalCells)
                                 {
-                                    targetArray[flatIndex] *= multiplierValue;
+                                    if (add) targetArray[flatIndex] += multiplierValue;
+                                    else targetArray[flatIndex] *= multiplierValue;
                                     modificationCount++;
                                 }
                             }
                         }
                     }
-                    Console.WriteLine($"      [ARRAY MODIFICATION - MULTIPLY] Modified '{targetProp}': Multiplied {modificationCount} cells by {multiplierValue} [Box I:{iStart}-{iEnd}, J:{jStart}-{jEnd}, K:{kStart}-{kEnd}]");
+                    Console.WriteLine($"      [ARRAY MODIFICATION - {op}] Modified '{targetProp}': {(add ? "Added" : "Multiplied")} {modificationCount} cells by {multiplierValue} [Box I:{iStart}-{iEnd}, J:{jStart}-{jEnd}, K:{kStart}-{kEnd}]");
                 }
             }
         }
@@ -992,7 +1047,7 @@ namespace EclipseDeckReader
                 if (tokens[index].Type == TokenType.Keyword &&
                     targetProp != "PERMX" && targetProp != "PERMY" && targetProp != "PERMZ" && targetProp != "PORO" &&
                     targetProp != "NTG" && targetProp != "ACTNUM" && targetProp != "MULTX" && targetProp != "MULTY" && targetProp != "MULTZ" &&
-                    targetProp != "DX" && targetProp != "DY" && targetProp != "DZ" && targetProp != "ZTOP" && targetProp != "TOPS")
+                    targetProp != "MULTPV" && targetProp != "DX" && targetProp != "DY" && targetProp != "DZ" && targetProp != "ZTOP" && targetProp != "TOPS")
                 {
                     break;
                 }
@@ -1006,9 +1061,8 @@ namespace EclipseDeckReader
                 }
                 index++;
 
-                int iStart = 1, iEnd = deck.NX;
-                int jStart = 1, jEnd = deck.NY;
-                int kStart = 1, kEnd = deck.NZ;
+                // Cells not given in the record default to the current BOX, or to the whole grid when there is none
+                var (iStart, iEnd, jStart, jEnd, kStart, kEnd) = box ?? (1, deck.NX, 1, deck.NY, 1, deck.NZ);
 
                 if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int iS)) { iStart = iS; index++; }
                 if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int iE)) { iEnd = iE; index++; }
@@ -1029,7 +1083,7 @@ namespace EclipseDeckReader
                 int totalCells = deck.NX * deck.NY * deck.NZ;
                 if (totalCells <= 0) continue;
 
-                if (targetProp == "MULTX" || targetProp == "MULTY" || targetProp == "MULTZ" ||
+                if (targetProp == "MULTX" || targetProp == "MULTY" || targetProp == "MULTZ" || targetProp == "MULTPV" ||
                     targetProp == "PERMX" || targetProp == "PERMY" || targetProp == "PERMZ" ||
                     targetProp == "PORO" || targetProp == "NTG" || targetProp == "DX" ||
                     targetProp == "DY" || targetProp == "DZ" || targetProp == "ZTOP" || targetProp == "TOPS")
@@ -1044,6 +1098,7 @@ namespace EclipseDeckReader
                         "MULTX" => deck.MultXArray,
                         "MULTY" => deck.MultYArray,
                         "MULTZ" => deck.MultZArray,
+                        "MULTPV" => deck.MultpvArray,
                         "DX" => deck.DxArray,
                         "DY" => deck.DyArray,
                         "DZ" => deck.DzArray,
@@ -1135,6 +1190,22 @@ namespace EclipseDeckReader
                 }
             }
             Console.WriteLine($"      [ARRAY MODIFICATION - EQUALS] Modified '{propName}': Assigned region index {(int)value} across {modificationCount} cells [Box I:{iStart}-{iEnd}, J:{jStart}-{jEnd}, K:{kStart}-{kEnd}]");
+        }
+
+        // Stores the values of a grid array keyword (PORO, PERMX, NTG, TOPS, ...). Inside a BOX they fill only the
+        // boxed cells, I fastest, then J, then K, and the rest of the array is kept; with no BOX they replace it.
+        private List<double> StoreGridArray(List<double> current, List<double> values, EclipseDataDeck deck, double fill)
+        {
+            if (box is not { } b) return values;
+
+            int totalCells = deck.NX * deck.NY * deck.NZ;
+            var result = current.Count == totalCells ? current : new List<double>(Enumerable.Repeat(fill, totalCells));
+            int n = 0;
+            for (int k = b.K1; k <= b.K2; k++)
+                for (int j = b.J1; j <= b.J2; j++)
+                    for (int i = b.I1; i <= b.I2 && n < values.Count; i++)
+                        result[(k - 1) * deck.NX * deck.NY + (j - 1) * deck.NX + (i - 1)] = values[n++];
+            return result;
         }
 
         private static void InitializeUniformArray(List<double> array, int size, double value)
