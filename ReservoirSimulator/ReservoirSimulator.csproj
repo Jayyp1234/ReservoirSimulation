@@ -16,5 +16,10 @@
     <ProjectReference Include="..\..\UnitManagementSystem\UnitSystem\UnitSystem.csproj" />
     <ProjectReference Include="..\EclipseDeckReader\EclipseDeckReader.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Black-oil model is half converted from the two-phase code (Vector4d/Vector6d mix) and does not compile yet.
+         Kept out of the build so the oil-water simulator builds; remove this line once BlackOilReservoir.cs compiles. -->
+    <Compile Remove="BlackOilReservoir.cs" />
+  </ItemGroup>
 
 </Project>
