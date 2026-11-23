@@ -222,13 +222,6 @@ namespace ReservoirSimulator
                 CurrentProducerControl = null;
                 WellType = WellType.INJECTOR;
                 CurrentWellStatus = latestInj.Status;
-
-                ConstraintType = latestInj.ControlMode.ToUpperInvariant() switch
-                {
-                    "RATE" => ConstraintType.RATE,
-                    "BHP" => ConstraintType.MAX_BHP,
-                    _ => ConstraintType.RATE
-                };
             }
             else
             {
@@ -236,18 +229,43 @@ namespace ReservoirSimulator
                 CurrentInjectorControl = null;
                 WellType = WellType.PRODUCER;
                 CurrentWellStatus = latestProd!.Status;
+            }
 
-                ConstraintType = latestProd.ControlMode.ToUpperInvariant() switch
-                {
-                    "ORAT" => ConstraintType.ORATE,
-                    "WRAT" => ConstraintType.WRATE,
-                    "GRAT" => ConstraintType.GRATE,
-                    "LRAT" => ConstraintType.LRATE,
-                    "BHP" => ConstraintType.MIN_BHP,
-                    _ => ConstraintType.ORATE
-                };
+            // Start from the deck's control mode only when a new WCONPROD/WCONINJE record takes effect. A switch to BHP
+            // made by the simulator (limit reached) then carries on into the next time steps instead of being undone
+            // every step, which made each step first try an impossible rate and get cut (HAND_D: 799 attempts, not 27).
+            object current = useInjector ? latestInj! : latestProd!;
+            if (!ReferenceEquals(current, _appliedControl))
+            {
+                ConstraintType = DeckConstraint;
+                _appliedControl = current;
             }
         }
+
+        // The control record whose mode ConstraintType was last reset to
+        private object? _appliedControl;
+
+        // The control mode the deck asks for (WCONPROD item 3, WCONINJE item 4). ConstraintType starts here; the
+        // simulator switches it to BHP when the BHP limit is reached and back here when the rate target can be met.
+        internal ConstraintType DeckConstraint =>
+            CurrentInjectorControl is { } inj
+                ? inj.ControlMode.ToUpperInvariant() switch
+                {
+                    "RATE" => ConstraintType.RATE,
+                    "BHP" => ConstraintType.MAX_BHP,
+                    _ => ConstraintType.RATE
+                }
+                : CurrentProducerControl is { } prod
+                    ? prod.ControlMode.ToUpperInvariant() switch
+                    {
+                        "ORAT" => ConstraintType.ORATE,
+                        "WRAT" => ConstraintType.WRATE,
+                        "GRAT" => ConstraintType.GRATE,
+                        "LRAT" => ConstraintType.LRATE,
+                        "BHP" => ConstraintType.MIN_BHP,
+                        _ => ConstraintType.ORATE
+                    }
+                    : ConstraintType;
 
         internal void UpdateCompletion(DateTime time)
         {
