@@ -17,15 +17,10 @@ namespace EclipseDeckReader
         // Skipped keywords already warned about, so a keyword repeated through the schedule is reported once
         private readonly HashSet<string> warnedKeywords = [];
 
-        // Folder of the main deck: relative INCLUDE paths are looked up here first (ECLIPSE/OPM), then next to the
-        // file that contains the INCLUDE
-        private string mainDeckDirectory = "";
-
         public EclipseDataDeck LoadDeckFile(string filepath)
         {
             // Reading state starts afresh for every deck, in case this reader is used again
             box = null; section = "RUNSPEC"; warnedKeywords.Clear();
-            mainDeckDirectory = Path.GetDirectoryName(Path.GetFullPath(filepath)) ?? "";
 
             var deck = new EclipseDataDeck();
             if (!File.Exists(filepath))
@@ -204,7 +199,7 @@ namespace EclipseDeckReader
 
                         case "ACTNUM":
                             var actData = KeywordExtractor.ExtractIntArray(tokens, ref i);
-                            deck.ActnumArray = StoreGridArray(deck.ActnumArray, actData, deck, 1);
+                            deck.ActnumArray = actData;
                             Console.WriteLine($"      [Data] Current ACTNUM array status: {deck.ActnumArray.Count} entries.");
                             break;
 
@@ -222,13 +217,13 @@ namespace EclipseDeckReader
 
                         case "SATNUM":
                             var satData = KeywordExtractor.ExtractIntArray(tokens, ref i);
-                            deck.SatnumArray = StoreGridArray(deck.SatnumArray, [.. satData.Select(s => s - 1)], deck, 0);
+                            deck.SatnumArray = [.. satData.Select(s => s - 1)];
                             Console.WriteLine($"      [Data] SATNUM: Loaded and converted {deck.SatnumArray.Count} entries to 0-based indexing.");
                             break;
 
                         case "PVTNUM":
                             var pvtData = KeywordExtractor.ExtractIntArray(tokens, ref i);
-                            deck.PvtnumArray = StoreGridArray(deck.PvtnumArray, [.. pvtData.Select(p => p - 1)], deck, 0);
+                            deck.PvtnumArray = [.. pvtData.Select(p => p - 1)];
                             Console.WriteLine($"      [Data] PVTNUM: Loaded and converted {deck.PvtnumArray.Count} entries to 0-based indexing.");
                             break;
 
@@ -325,17 +320,18 @@ namespace EclipseDeckReader
                         case "EQUINUM":
                         case "EQLNUM":
                             var equilData = KeywordExtractor.ExtractIntArray(tokens, ref i);
-                            deck.EquinumArray = StoreGridArray(deck.EquinumArray, [.. equilData.Select(e => e - 1)], deck, 0);
+                            deck.EquinumArray = [.. equilData.Select(e => e - 1)];
                             Console.WriteLine($"      [Data] EQUINUM: Loaded and converted {deck.EquinumArray.Count} entries to 0-based indexing.");
                             break;
 
                         case "DENSITY":
                             var densities = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
-                            // A missing or defaulted (1*) item takes ECLIPSE's default for the deck's units
-                            var (oilDefault, waterDefault, gasDefault) = DefaultSurfaceDensities(deck.UnitSystem);
-                            deck.SurfaceOilDensity = densities.Count >= 1 && densities[0] > 0 ? densities[0] : oilDefault;
-                            deck.SurfaceWaterDensity = densities.Count >= 2 && densities[1] > 0 ? densities[1] : waterDefault;
-                            deck.SurfaceGasDensity = densities.Count >= 3 && densities[2] > 0 ? densities[2] : gasDefault;
+                            if (densities.Count >= 1)
+                                deck.SurfaceOilDensity = densities[0];
+                            if (densities.Count >= 2)
+                                deck.SurfaceWaterDensity = densities[1];
+                            if (densities.Count >= 3)
+                                deck.SurfaceGasDensity = densities[2];
                             Console.WriteLine($"      [Data] DENSITY: Loaded Surface Baselines -> Oil: {deck.SurfaceOilDensity:F2} | Water: {deck.SurfaceWaterDensity:F2} | Gas: {deck.SurfaceGasDensity:F4}");
                             
                             break;
@@ -364,13 +360,13 @@ namespace EclipseDeckReader
 
                         case "FLUXNUM":
                             var fluxData = KeywordExtractor.ExtractIntArray(tokens, ref i);
-                            deck.FluxnumArray = StoreGridArray(deck.FluxnumArray, fluxData, deck, 1);
+                            deck.FluxnumArray = fluxData;
                             Console.WriteLine($"      [Data] FLUXNUM: Loaded {deck.FluxnumArray.Count} entries.");
                             break;
 
                         case "MULTNUM":
                             var multData = KeywordExtractor.ExtractIntArray(tokens, ref i);
-                            deck.MultnumArray = StoreGridArray(deck.MultnumArray, multData, deck, 1);
+                            deck.MultnumArray = multData;
                             Console.WriteLine($"      [Data] MULTNUM: Loaded {deck.MultnumArray.Count} entries.");
                             break;
 
@@ -534,9 +530,8 @@ namespace EclipseDeckReader
 
                 if (rawVal.EndsWith('*') && int.TryParse(rawVal.AsSpan(0, rawVal.Length - 1), out int defaultCount))
                 {
-                    // Defaulted table values are filled in by ChunkIntoRows (linear interpolation, as in ECLIPSE)
                     for (int d = 0; d < defaultCount; d++)
-                        flatRegionValues.Add(double.NaN);
+                        flatRegionValues.Add(0.0);
                     continue;
                 }
 
@@ -570,33 +565,7 @@ namespace EclipseDeckReader
                 int count = Math.Min(columnsPerRow, flatValues.Count - start);
                 rows.Add(flatValues.GetRange(start, count));
             }
-            FillDefaultedTableValues(rows);
             return rows;
-        }
-
-        // A defaulted (1*) value in a table column is linearly interpolated against the first column between the nearest
-        // given values above and below it, as ECLIPSE does (it used to become 0). At the ends of a column the nearest
-        // given value is used; a column with no values at all becomes 0.
-        private static void FillDefaultedTableValues(List<List<double>> rows)
-        {
-            if (rows.Count == 0) return;
-            int columns = rows.Max(r => r.Count);
-            for (int c = 1; c < columns; c++)
-            {
-                var given = Enumerable.Range(0, rows.Count).Where(r => c < rows[r].Count && !double.IsNaN(rows[r][c])).ToList();
-                for (int r = 0; r < rows.Count; r++)
-                {
-                    if (c >= rows[r].Count || !double.IsNaN(rows[r][c])) continue;
-                    int below = given.LastOrDefault(g => g < r, -1), above = given.FirstOrDefault(g => g > r, -1);
-                    if (below >= 0 && above >= 0)
-                    {
-                        double x0 = rows[below][0], x1 = rows[above][0], x = rows[r][0];
-                        double w = x1 != x0 ? (x - x0) / (x1 - x0) : 0.0;
-                        rows[r][c] = rows[below][c] + w * (rows[above][c] - rows[below][c]);
-                    }
-                    else rows[r][c] = below >= 0 ? rows[below][c] : above >= 0 ? rows[above][c] : 0.0;
-                }
-            }
         }
 
         private static void InitializeArrays(EclipseDataDeck deck)
@@ -616,48 +585,74 @@ namespace EclipseDeckReader
             Console.WriteLine($"      [Grid Initialization] MULTX, MULTY, and MULTZ baseline profiles initialized with {totalCells} entries (Default factor = 1.0).");
         }
 
-        // START: day month year /. The record is read up to its '/', so it may be split over lines, and the month may be
-        // quoted or not (before, the year was taken from a fixed token position and a split record threw).
         private void ParseStartBlock(List<Token> tokens, ref int index, EclipseDataDeck deck)
         {
             ClearLeadingLayoutSpacers(tokens, ref index);
-            var record = ReadOneRecord(tokens, ref index);
-            if (TryParseEclipseDate(record, out var start))
+            if (index >= tokens.Count || tokens[index].Type == TokenType.Slash) { if (index < tokens.Count) index++; return; }
+
+            if (int.TryParse(tokens[index].Content.ToString(), out int day))
             {
-                deck.StartDate = start;
-                deck.CurrentSimDate = start;
+                string monthStr = tokens[index + 1].Content.ToString().Trim('\'').Trim('"').ToUpperInvariant();
+                int.TryParse(tokens[index + 2].Content.ToString(), out int year);
+
+                int month = monthStr switch
+                {
+                    "JAN" => 1,
+                    "FEB" => 2,
+                    "MAR" => 3,
+                    "APR" => 4,
+                    "MAY" => 5,
+                    "JUN" or "JNE" => 6,
+                    "JUL" or "JLY" => 7,
+                    "AUG" => 8,
+                    "SEP" => 9,
+                    "OCT" => 10,
+                    "NOV" => 11,
+                    "DEC" => 12,
+                    _ => 1
+                };
+
+                deck.StartDate = new DateTime(year, month, day);
+                deck.CurrentSimDate = deck.StartDate;
+
                 Console.WriteLine($"      [Schedule Init] Master Simulation START date initialized to: {deck.StartDate:yyyy-MM-dd}");
             }
+
+            index += 3;
+            AdvanceAndClearTrailingJunk(tokens, ref index);
         }
 
-        // DATES: one date record per line, ended by a lone '/'. Without START, day 0 is ECLIPSE's default 1 JAN 1983.
         private void ParseDatesBlock(List<Token> tokens, ref int index, EclipseDataDeck deck)
         {
-            foreach (var record in ReadSlashRecords(tokens, ref index))
+            while (index < tokens.Count)
             {
-                if (!TryParseEclipseDate(record, out var nextDate)) continue;
+                ClearLeadingLayoutSpacers(tokens, ref index);
+                if (index >= tokens.Count || tokens[index].Type == TokenType.Slash) { if (index < tokens.Count) index++; break; }
+                if (tokens[index].Type == TokenType.Keyword) break;
 
-                double dtDays = (nextDate - deck.CurrentSimDate).TotalDays;
-                if (dtDays > 0)
+                if (int.TryParse(tokens[index].Content.ToString(), out int day))
                 {
-                    deck.TimeSteps.Add(dtDays);
-                    deck.ReportDates.Add(nextDate);
+                    string monthStr = tokens[index + 1].Content.ToString().Trim('\'').Trim('"').ToUpperInvariant();
+                    int.TryParse(tokens[index + 2].Content.ToString(), out int year);
+
+                    int month = ParseEclipseMonth(monthStr);
+                    var nextDate = new DateTime(year, month, day);
+
+                    if (deck.StartDate == default)
+                        deck.StartDate = nextDate;
+
+                    double dtDays = (nextDate - deck.CurrentSimDate).TotalDays;
+                    if (dtDays > 0)
+                    {
+                        deck.TimeSteps.Add(dtDays);
+                        deck.ReportDates.Add(nextDate);
+                    }
+
+                    deck.CurrentSimDate = nextDate;
+                    Console.WriteLine($"      [Schedule Sync] DATES stepped to: {deck.CurrentSimDate:yyyy-MM-dd} (dt = {dtDays:F1} days)");
                 }
-
-                deck.CurrentSimDate = nextDate;
-                Console.WriteLine($"      [Schedule Sync] DATES stepped to: {deck.CurrentSimDate:yyyy-MM-dd} (dt = {dtDays:F1} days)");
-            }
-        }
-
-        private static bool TryParseEclipseDate(List<string> record, out DateTime date)
-        {
-            date = default;
-            if (record.Count < 3 || !int.TryParse(record[0], out int day) || !int.TryParse(record[2], out int year)) return false;
-            try { date = new DateTime(year, ParseEclipseMonth(record[1]), day); return true; }
-            catch (Exception ex) when (ex is FormatException or ArgumentOutOfRangeException)
-            {
-                Console.WriteLine($"      [Warning] Date '{string.Join(" ", record)}' could not be read; record skipped.");
-                return false;
+                index += 3;
+                AdvanceAndClearTrailingJunk(tokens, ref index);
             }
         }
 
@@ -665,6 +660,13 @@ namespace EclipseDeckReader
         {
             var steps = KeywordExtractor.ExtractDoubleArray(tokens, ref index);
             if (steps.Count == 0) return;
+
+            // Anchor Day 0 cleanly if START was omitted (e.g., SPE1 Odeh deck)
+            if (deck.StartDate == default)
+            {
+                deck.StartDate = new DateTime(2000, 1, 1);
+                deck.CurrentSimDate = deck.StartDate;
+            }
 
             double totalDays = 0.0;
             foreach (double dt in steps)
@@ -751,10 +753,6 @@ namespace EclipseDeckReader
 
                 if (matches.Count > 0)
                     return matches;
-
-                // A pattern that matches no well must not create a well literally named "P*"
-                Console.WriteLine($"      [Warning] Well pattern '{wellNamePattern}' matches no well; record skipped.");
-                return [];
             }
 
             if (!deck.Wells.TryGetValue(wellNamePattern, out var wellData))
@@ -800,9 +798,7 @@ namespace EclipseDeckReader
 
                     string status = record.Count > 5 && record[5] != "1*" ? record[5].ToUpperInvariant() : "OPEN";
                     double transFactor = ParseOptionalDouble(record, 7, fallback: 0.0);
-                    // 0 = not given; the simulator then uses its default (0.5 ft). The value is in deck units and is
-                    // converted by the simulator. A 0.5 fallback here read as 0.5 m in METRIC decks.
-                    double dia = ParseOptionalDouble(record, 8, fallback: 0.0);
+                    double dia = ParseOptionalDouble(record, 8, fallback: 0.5);
                     double skin = ParseOptionalDouble(record, 10, fallback: 0.0);
 
                     int iZeroBased = iRaw - 1;
@@ -838,36 +834,24 @@ namespace EclipseDeckReader
             }
         }
 
-        // ---------------------------------------------------------------------------------------------------------
-        // EQUALS, MULTIPLY, ADD and COPY. Each record is read up to its '/' (ReadSlashRecords), so names may be quoted
-        // or not and the box may hold defaults (1*, 4*). Box items that are not given or are defaulted take the
-        // current BOX, or the whole grid when there is none. Before, the box was read token by token and stopped at
-        // the first 1*, so 'PERMZ' 10 1* 1* 1* 1* 3 3 / set the whole grid instead of layer 3; COPY did not strip
-        // quotes (so 'PERMX' matched nothing) and ignored its box.
-        // ---------------------------------------------------------------------------------------------------------
-
-        // EQUALS: 'PROP' value [I1 I2 J1 J2 K1 K2] /
-        private void ParseEqualsModifierBlock(List<Token> tokens, ref int index, EclipseDataDeck deck)
+        private static void AdvanceAndClearTrailingJunk(List<Token> tokens, ref int index)
         {
-            foreach (var record in ReadSlashRecords(tokens, ref index).Select(ExpandRepeats))
+            while (index < tokens.Count && tokens[index].Type != TokenType.Slash)
             {
-                if (record.Count < 2 || record[0] is not string name) continue;
-                string prop = name.ToUpperInvariant();
-                double value = ParseNumber(record[1]);
-                var cells = ReadBox(record, 2, deck);
-
-                if (GridArray(deck, prop, create: true) is { } array)
+                index++;
+            }
+            if (index < tokens.Count && tokens[index].Type == TokenType.Slash)
+            {
+                index++;
+            }
+            while (index < tokens.Count)
+            {
+                if (tokens[index].Type == TokenType.NewLine)
                 {
-                    int n = ForEachBoxCell(deck, cells, m => array[m] = value);
-                    Console.WriteLine($"      [ARRAY MODIFICATION - EQUALS] '{prop}' = {value} in {n} cells {BoxText(cells)}");
+                    index++;
+                    break;
                 }
-                else if (IntGridArray(deck, prop, create: true) is ({ } ints, int offset))
-                {
-                    int n = ForEachBoxCell(deck, cells, m => ints[m] = (int)value + offset);
-                    Console.WriteLine($"      [ARRAY MODIFICATION - EQUALS] '{prop}' = {(int)value} in {n} cells {BoxText(cells)}");
-                }
-                else if (warnedKeywords.Add("EQUALS " + prop))
-                    Console.WriteLine($"      [Warning] EQUALS: '{prop}' is not an array this reader keeps; record skipped.");
+                index++;
             }
         }
 
@@ -875,177 +859,351 @@ namespace EclipseDeckReader
         private void ParseMultiplyModifierBlock(List<Token> tokens, ref int index, EclipseDataDeck deck, bool add = false)
         {
             string op = add ? "ADD" : "MULTIPLY";
-            int totalCells = deck.NX * deck.NY * deck.NZ;
-            foreach (var record in ReadSlashRecords(tokens, ref index).Select(ExpandRepeats))
+            while (index < tokens.Count)
             {
-                if (record.Count < 2 || record[0] is not string name) continue;
-                string prop = name.ToUpperInvariant();
-                double value = ParseNumber(record[1]);
-                var cells = ReadBox(record, 2, deck);
-
-                if (prop == "ACTNUM" && !add && deck.ActnumArray.Count == totalCells)
+                while (index < tokens.Count &&
+                      (tokens[index].Type == TokenType.NewLine ||
+                       string.IsNullOrWhiteSpace(tokens[index].Content.ToString()) ||
+                       tokens[index].Content.Span.StartsWith("--")))
                 {
-                    int n = ForEachBoxCell(deck, cells, m => deck.ActnumArray[m] = (int)(deck.ActnumArray[m] * value));
-                    Console.WriteLine($"      [ARRAY MODIFICATION - {op}] 'ACTNUM' × {value} in {n} cells {BoxText(cells)}");
+                    index++;
+                }
+
+                if (index >= tokens.Count) break;
+                if (tokens[index].Type == TokenType.Slash) { index++; break; }
+
+                string targetProp = tokens[index].Content.ToString().ToUpperInvariant().Trim('\'').Trim('"');
+
+                if (tokens[index].Type == TokenType.Keyword &&
+                    targetProp != "PERMX" && targetProp != "PERMY" && targetProp != "PERMZ" && targetProp != "PORO" &&
+                    targetProp != "NTG" && targetProp != "ACTNUM" && targetProp != "MULTX" && targetProp != "MULTY" && targetProp != "MULTZ" &&
+                    targetProp != "MULTPV" && targetProp != "DX" && targetProp != "DY" && targetProp != "DZ" && targetProp != "ZTOP" && targetProp != "TOPS")
+                {
+                    break;
+                }
+                index++;
+
+                if (index >= tokens.Count) break;
+                double.TryParse(tokens[index].Content.ToString(), CultureInfo.InvariantCulture, out double multiplierValue);
+                index++;
+
+                // The six box numbers are optional: missing ones default to the current BOX, or to the whole grid
+                var (iStart, iEnd, jStart, jEnd, kStart, kEnd) = box ?? (1, deck.NX, 1, deck.NY, 1, deck.NZ);
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int iS)) { iStart = iS; index++; }
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int iE)) { iEnd = iE; index++; }
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int jS)) { jStart = jS; index++; }
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int jE)) { jEnd = jE; index++; }
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int kS)) { kStart = kS; index++; }
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int kE)) { kEnd = kE; index++; }
+
+                while (index < tokens.Count && tokens[index].Type != TokenType.Slash) index++;
+                if (index < tokens.Count && tokens[index].Type == TokenType.Slash) index++;
+
+                while (index < tokens.Count)
+                {
+                    if (tokens[index].Type == TokenType.NewLine) { index++; break; }
+                    index++;
+                }
+
+                int totalCells = deck.NX * deck.NY * deck.NZ;
+                if (targetProp == "ACTNUM" && !add && deck.ActnumArray.Count == totalCells)
+                {
+                    int modificationCount = 0;
+                    for (int k = kStart; k <= kEnd; k++)
+                    {
+                        for (int j = jStart; j <= jEnd; j++)
+                        {
+                            for (int i = iStart; i <= iEnd; i++)
+                            {
+                                int flatIndex = (k - 1) * deck.NX * deck.NY + (j - 1) * deck.NX + (i - 1);
+                                if (flatIndex >= 0 && flatIndex < totalCells)
+                                {
+                                    deck.ActnumArray[flatIndex] = (int)(deck.ActnumArray[flatIndex] * multiplierValue);
+                                    modificationCount++;
+                                }
+                            }
+                        }
+                    }
+                    Console.WriteLine($"      [ARRAY MODIFICATION - MULTIPLY] Modified '{targetProp}': Multiplied {modificationCount} cells by {multiplierValue} [Box I:{iStart}-{iEnd}, J:{jStart}-{jEnd}, K:{kStart}-{kEnd}]");
                     continue;
                 }
 
-                if (GridArray(deck, prop) is { } array && array.Count == totalCells)
+                List<double> targetArray = targetProp switch
                 {
-                    int n = ForEachBoxCell(deck, cells, m => array[m] = add ? array[m] + value : array[m] * value);
-                    Console.WriteLine($"      [ARRAY MODIFICATION - {op}] '{prop}' {(add ? "+" : "×")} {value} in {n} cells {BoxText(cells)}");
+                    "PERMX" => deck.PermXArray,
+                    "PERMY" => deck.PermYArray,
+                    "PERMZ" => deck.PermZArray,
+                    "PORO" => deck.PorosityArray,
+                    "NTG" => deck.NtgArray,
+                    "MULTX" => deck.MultXArray,
+                    "MULTY" => deck.MultYArray,
+                    "MULTZ" => deck.MultZArray,
+                    "MULTPV" => deck.MultpvArray,
+                    "DX" => deck.DxArray,
+                    "DY" => deck.DyArray,
+                    "DZ" => deck.DzArray,
+                    "ZTOP" or "TOPS" => deck.ZtopArray,
+                    _ => null
+                };
+
+                if (targetArray != null && targetArray.Count == totalCells)
+                {
+                    int modificationCount = 0;
+                    for (int k = kStart; k <= kEnd; k++)
+                    {
+                        for (int j = jStart; j <= jEnd; j++)
+                        {
+                            for (int i = iStart; i <= iEnd; i++)
+                            {
+                                int flatIndex = (k - 1) * deck.NX * deck.NY + (j - 1) * deck.NX + (i - 1);
+                                if (flatIndex >= 0 && flatIndex < totalCells)
+                                {
+                                    if (add) targetArray[flatIndex] += multiplierValue;
+                                    else targetArray[flatIndex] *= multiplierValue;
+                                    modificationCount++;
+                                }
+                            }
+                        }
+                    }
+                    Console.WriteLine($"      [ARRAY MODIFICATION - {op}] Modified '{targetProp}': {(add ? "Added" : "Multiplied")} {modificationCount} cells by {multiplierValue} [Box I:{iStart}-{iEnd}, J:{jStart}-{jEnd}, K:{kStart}-{kEnd}]");
                 }
-                else if (warnedKeywords.Add(op + " " + prop))
-                    Console.WriteLine($"      [Warning] {op}: '{prop}' has not been given for every cell yet; record skipped.");
             }
         }
 
-        // COPY: 'FROM' 'TO' [I1 I2 J1 J2 K1 K2] / copies the values of one array into another, inside the box only
         private void ParseCopyModifierBlock(List<Token> tokens, ref int index, EclipseDataDeck deck)
         {
-            int totalCells = deck.NX * deck.NY * deck.NZ;
-            foreach (var record in ReadSlashRecords(tokens, ref index).Select(ExpandRepeats))
+            while (index < tokens.Count && tokens[index].Type != TokenType.Slash)
             {
-                if (record.Count < 2 || record[0] is not string from || record[1] is not string to) continue;
-                string source = from.ToUpperInvariant(), target = to.ToUpperInvariant();
-                var cells = ReadBox(record, 2, deck);
-
-                if (GridArray(deck, source) is { } src && src.Count == totalCells && GridArray(deck, target, create: true) is { } dst)
+                if (tokens[index].Type == TokenType.NewLine ||
+                    string.IsNullOrWhiteSpace(tokens[index].Content.ToString()) ||
+                    tokens[index].Content.Span.StartsWith("--"))
                 {
-                    int n = ForEachBoxCell(deck, cells, m => dst[m] = src[m]);
-                    Console.WriteLine($"      [ARRAY MODIFICATION - COPY] '{source}' → '{target}' in {n} cells {BoxText(cells)}");
+                    index++;
+                    continue;
                 }
-                else if (IntGridArray(deck, source) is ({ } isrc, int srcOffset) && isrc.Count == totalCells &&
-                         IntGridArray(deck, target, create: true) is ({ } idst, int dstOffset))
+
+                if (index + 1 >= tokens.Count) break;
+
+                string sourceProp = tokens[index].Content.ToString().ToUpperInvariant();
+                string targetProp = tokens[index + 1].Content.ToString().ToUpperInvariant();
+                index += 2;
+
+                while (index < tokens.Count && tokens[index].Type != TokenType.Slash && tokens[index].Type != TokenType.Keyword) index++;
+                if (index < tokens.Count && tokens[index].Type == TokenType.Slash) index++;
+
+                if (sourceProp == "ACTNUM" && deck.ActnumArray.Count > 0)
                 {
-                    int n = ForEachBoxCell(deck, cells, m => idst[m] = isrc[m] - srcOffset + dstOffset);
-                    Console.WriteLine($"      [ARRAY MODIFICATION - COPY] '{source}' → '{target}' in {n} cells {BoxText(cells)}");
+                    var clonedArray = new List<int>(deck.ActnumArray);
+                    if (targetProp == "ACTNUM") deck.ActnumArray = clonedArray;
+                    Console.WriteLine($"      [ARRAY MODIFICATION - COPY] Modified '{targetProp}': Overwrote array values by cloning all {clonedArray.Count} elements from '{sourceProp}'");
+                    continue;
                 }
-                else if (warnedKeywords.Add("COPY " + source + " " + target))
-                    Console.WriteLine($"      [Warning] COPY: '{source}' → '{target}' could not be copied (source not given for every cell); record skipped.");
-            }
-        }
 
-        // N*value becomes N copies of value; a bare N* becomes N defaulted (null) items
-        private static List<string?> ExpandRepeats(List<string> record)
-        {
-            var items = new List<string?>();
-            foreach (var item in record)
-            {
-                int star = item.IndexOf('*');
-                if (star > 0 && int.TryParse(item.AsSpan(0, star), out int count))
+                List<double> sourceArray = sourceProp switch
                 {
-                    string? value = star + 1 < item.Length ? item[(star + 1)..] : null;
-                    for (int r = 0; r < count; r++) items.Add(value);
-                }
-                else items.Add(item);
-            }
-            return items;
-        }
+                    "PERMX" => deck.PermXArray,
+                    "PERMY" => deck.PermYArray,
+                    "PERMZ" => deck.PermZArray,
+                    "PORO" => deck.PorosityArray,
+                    "NTG" => deck.NtgArray,
+                    "MULTX" => deck.MultXArray,
+                    "MULTY" => deck.MultYArray,
+                    "MULTZ" => deck.MultZArray,
+                    "DX" => deck.DxArray,
+                    "DY" => deck.DyArray,
+                    "DZ" => deck.DzArray,
+                    "ZTOP" or "TOPS" => deck.ZtopArray,
+                    _ => null
+                };
 
-        private static double ParseNumber(string? text) =>
-            double.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out double v) ? v : 0.0;
-
-        // Box items I1 I2 J1 J2 K1 K2 starting at record[start]; a missing or defaulted item keeps the BOX or whole-grid value
-        private (int I1, int I2, int J1, int J2, int K1, int K2) ReadBox(List<string?> record, int start, EclipseDataDeck deck)
-        {
-            var b = box ?? (1, deck.NX, 1, deck.NY, 1, deck.NZ);
-            int[] v = [b.I1, b.I2, b.J1, b.J2, b.K1, b.K2];
-            for (int n = 0; n < 6; n++)
-                if (start + n < record.Count && int.TryParse(record[start + n], out int given)) v[n] = given;
-            return (v[0], v[1], v[2], v[3], v[4], v[5]);
-        }
-
-        private static string BoxText((int I1, int I2, int J1, int J2, int K1, int K2) c) =>
-            $"[Box I:{c.I1}-{c.I2}, J:{c.J1}-{c.J2}, K:{c.K1}-{c.K2}]";
-
-        // Calls action(m) for every cell of the box inside the grid, m being the 0-based natural index; returns the count
-        private static int ForEachBoxCell(EclipseDataDeck deck, (int I1, int I2, int J1, int J2, int K1, int K2) c, Action<int> action)
-        {
-            int count = 0;
-            for (int k = Math.Max(1, c.K1); k <= Math.Min(deck.NZ, c.K2); k++)
-                for (int j = Math.Max(1, c.J1); j <= Math.Min(deck.NY, c.J2); j++)
-                    for (int i = Math.Max(1, c.I1); i <= Math.Min(deck.NX, c.I2); i++)
+                if (sourceArray != null && sourceArray.Count > 0)
+                {
+                    var clonedArray = new List<double>(sourceArray);
+                    switch (targetProp)
                     {
-                        action((k - 1) * deck.NX * deck.NY + (j - 1) * deck.NX + (i - 1));
-                        count++;
+                        case "PERMX": deck.PermXArray = clonedArray; break;
+                        case "PERMY": deck.PermYArray = clonedArray; break;
+                        case "PERMZ": deck.PermZArray = clonedArray; break;
+                        case "PORO": deck.PorosityArray = clonedArray; break;
+                        case "NTG": deck.NtgArray = clonedArray; break;
+                        case "MULTX": deck.MultXArray = clonedArray; break;
+                        case "MULTY": deck.MultYArray = clonedArray; break;
+                        case "MULTZ": deck.MultZArray = clonedArray; break;
+                        case "DX": deck.DxArray = clonedArray; break;
+                        case "DY": deck.DyArray = clonedArray; break;
+                        case "DZ": deck.DzArray = clonedArray; break;
+                        case "ZTOP":
+                        case "TOPS": deck.ZtopArray = clonedArray; break;
                     }
-            return count;
-        }
-
-        // The decimal grid arrays the box edits can change. With create, a missing or wrong-sized array is replaced by a
-        // full one (0, or 1 for NTG and multipliers) so the edit has every cell to work on.
-        private static List<double>? GridArray(EclipseDataDeck deck, string name, bool create = false)
-        {
-            List<double>? array = name switch
-            {
-                "PERMX" => deck.PermXArray, "PERMY" => deck.PermYArray, "PERMZ" => deck.PermZArray,
-                "PORO" => deck.PorosityArray, "NTG" => deck.NtgArray,
-                "MULTX" => deck.MultXArray, "MULTY" => deck.MultYArray, "MULTZ" => deck.MultZArray, "MULTPV" => deck.MultpvArray,
-                "DX" => deck.DxArray, "DY" => deck.DyArray, "DZ" => deck.DzArray, "ZTOP" or "TOPS" => deck.ZtopArray,
-                _ => null
-            };
-            int totalCells = deck.NX * deck.NY * deck.NZ;
-            if (array is null || !create || array.Count == totalCells) return array;
-
-            double fill = name is "NTG" or "MULTX" or "MULTY" or "MULTZ" or "MULTPV" ? 1.0 : 0.0;
-            var full = new List<double>(Enumerable.Repeat(fill, totalCells));
-            switch (name)
-            {
-                case "PERMX": deck.PermXArray = full; break;
-                case "PERMY": deck.PermYArray = full; break;
-                case "PERMZ": deck.PermZArray = full; break;
-                case "PORO": deck.PorosityArray = full; break;
-                case "NTG": deck.NtgArray = full; break;
-                case "MULTX": deck.MultXArray = full; break;
-                case "MULTY": deck.MultYArray = full; break;
-                case "MULTZ": deck.MultZArray = full; break;
-                case "MULTPV": deck.MultpvArray = full; break;
-                case "DX": deck.DxArray = full; break;
-                case "DY": deck.DyArray = full; break;
-                case "DZ": deck.DzArray = full; break;
-                default: deck.ZtopArray = full; break;
+                    Console.WriteLine($"      [ARRAY MODIFICATION - COPY] Modified '{targetProp}': Overwrote array values by cloning all {clonedArray.Count} elements from '{sourceProp}'");
+                }
             }
-            return full;
+            if (index < tokens.Count && tokens[index].Type == TokenType.Slash) index++;
         }
 
-        // The integer grid arrays, with the offset between the deck's value and the stored value (region numbers are
-        // stored 0-based). With create, a missing array is made full size (ACTNUM 1, regions 1).
-        private static (List<int>? Array, int Offset) IntGridArray(EclipseDataDeck deck, string name, bool create = false)
+        private void ParseEqualsModifierBlock(List<Token> tokens, ref int index, EclipseDataDeck deck)
         {
-            int totalCells = deck.NX * deck.NY * deck.NZ;
-            (List<int>? array, int offset, int fill) = name switch
+            while (index < tokens.Count)
             {
-                "ACTNUM" => (deck.ActnumArray, 0, 1),
-                "SATNUM" => (deck.SatnumArray, -1, 0),
-                "PVTNUM" => (deck.PvtnumArray, -1, 0),
-                "EQLNUM" or "EQUINUM" => (deck.EquinumArray, -1, 0),
-                "FLUXNUM" => (deck.FluxnumArray, 0, 1),
-                "MULTNUM" => (deck.MultnumArray, 0, 1),
-                _ => ((List<int>?)null, 0, 0)
-            };
-            if (array is not null && create && array.Count != totalCells)
-            {
-                array.Clear();
-                array.AddRange(Enumerable.Repeat(fill, totalCells));
+                while (index < tokens.Count &&
+                      (tokens[index].Type == TokenType.NewLine ||
+                       string.IsNullOrWhiteSpace(tokens[index].Content.ToString()) ||
+                       tokens[index].Content.Span.StartsWith("--")))
+                {
+                    index++;
+                }
+
+                if (index >= tokens.Count) break;
+                if (tokens[index].Type == TokenType.Slash) { index++; break; }
+
+                string targetProp = tokens[index].Content.ToString().ToUpperInvariant().Trim('\'').Trim('"');
+
+                if (tokens[index].Type == TokenType.Keyword &&
+                    targetProp != "PERMX" && targetProp != "PERMY" && targetProp != "PERMZ" && targetProp != "PORO" &&
+                    targetProp != "NTG" && targetProp != "ACTNUM" && targetProp != "MULTX" && targetProp != "MULTY" && targetProp != "MULTZ" &&
+                    targetProp != "MULTPV" && targetProp != "DX" && targetProp != "DY" && targetProp != "DZ" && targetProp != "ZTOP" && targetProp != "TOPS")
+                {
+                    break;
+                }
+                index++;
+
+                if (index >= tokens.Count) break;
+
+                if (!double.TryParse(tokens[index].Content.ToString(), CultureInfo.InvariantCulture, out double value))
+                {
+                    value = 0.0;
+                }
+                index++;
+
+                // Cells not given in the record default to the current BOX, or to the whole grid when there is none
+                var (iStart, iEnd, jStart, jEnd, kStart, kEnd) = box ?? (1, deck.NX, 1, deck.NY, 1, deck.NZ);
+
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int iS)) { iStart = iS; index++; }
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int iE)) { iEnd = iE; index++; }
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int jS)) { jStart = jS; index++; }
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int jE)) { jEnd = jE; index++; }
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int kS)) { kStart = kS; index++; }
+                if (index < tokens.Count && int.TryParse(tokens[index].Content.ToString(), out int kE)) { kEnd = kE; index++; }
+
+                while (index < tokens.Count && tokens[index].Type != TokenType.Slash) index++;
+                if (index < tokens.Count && tokens[index].Type == TokenType.Slash) index++;
+
+                while (index < tokens.Count)
+                {
+                    if (tokens[index].Type == TokenType.NewLine) { index++; break; }
+                    index++;
+                }
+
+                int totalCells = deck.NX * deck.NY * deck.NZ;
+                if (totalCells <= 0) continue;
+
+                if (targetProp == "MULTX" || targetProp == "MULTY" || targetProp == "MULTZ" || targetProp == "MULTPV" ||
+                    targetProp == "PERMX" || targetProp == "PERMY" || targetProp == "PERMZ" ||
+                    targetProp == "PORO" || targetProp == "NTG" || targetProp == "DX" ||
+                    targetProp == "DY" || targetProp == "DZ" || targetProp == "ZTOP" || targetProp == "TOPS")
+                {
+                    List<double> targetArray = targetProp switch
+                    {
+                        "PERMX" => deck.PermXArray,
+                        "PERMY" => deck.PermYArray,
+                        "PERMZ" => deck.PermZArray,
+                        "PORO" => deck.PorosityArray,
+                        "NTG" => deck.NtgArray,
+                        "MULTX" => deck.MultXArray,
+                        "MULTY" => deck.MultYArray,
+                        "MULTZ" => deck.MultZArray,
+                        "MULTPV" => deck.MultpvArray,
+                        "DX" => deck.DxArray,
+                        "DY" => deck.DyArray,
+                        "DZ" => deck.DzArray,
+                        "ZTOP" or "TOPS" => deck.ZtopArray,
+                        _ => null
+                    };
+
+                    if (targetArray != null)
+                    {
+                        if (targetArray.Count == 0) InitializeUniformArray(targetArray, totalCells, 1.0);
+
+                        int modificationCount = 0; int flatk, flatj, flati;
+                        for (int k = kStart; k <= kEnd; k++)
+                        {
+                            flatk = k - 1;
+                            for (int j = jStart; j <= jEnd; j++)
+                            {
+                                flatj = flatk * deck.NY + (j - 1);
+                                for (int i = iStart; i <= iEnd; i++)
+                                {
+                                    flati = flatj * deck.NX + (i - 1);
+                                    if (flati >= 0 && flati < totalCells)
+                                    {
+                                        targetArray[flati] = value;
+                                        modificationCount++;
+                                    }
+                                }
+                            }
+                        }
+                        Console.WriteLine($"      [ARRAY MODIFICATION - EQUALS] Modified '{targetProp}': Assigned value {value} across {modificationCount} cells [Box I:{iStart}-{iEnd}, J:{jStart}-{jEnd}, K:{kStart}-{kEnd}]");
+                    }
+                }
+                else
+                {
+                    int adjustedValue = (int)value;
+
+                    switch (targetProp)
+                    {
+                        case "ACTNUM":
+                            if (deck.ActnumArray.Count == 0) InitializeUniformArray(deck.ActnumArray, totalCells, 1);
+                            ApplyIntEqualsOverride(deck.ActnumArray, adjustedValue, iStart, iEnd, jStart, jEnd, kStart, kEnd, deck.NX, deck.NY, totalCells, targetProp);
+                            break;
+
+                        case "SATNUM":
+                            if (deck.SatnumArray.Count == 0) InitializeUniformArray(deck.SatnumArray, totalCells, 0);
+                            ApplyIntEqualsOverride(deck.SatnumArray, adjustedValue - 1, iStart, iEnd, jStart, jEnd, kStart, kEnd, deck.NX, deck.NY, totalCells, targetProp);
+                            break;
+
+                        case "PVTNUM":
+                            if (deck.PvtnumArray.Count == 0) InitializeUniformArray(deck.PvtnumArray, totalCells, 0);
+                            ApplyIntEqualsOverride(deck.PvtnumArray, adjustedValue - 1, iStart, iEnd, jStart, jEnd, kStart, kEnd, deck.NX, deck.NY, totalCells, targetProp);
+                            break;
+
+                        case "EQUINUM":
+                            if (deck.EquinumArray.Count == 0) InitializeUniformArray(deck.EquinumArray, totalCells, 0);
+                            ApplyIntEqualsOverride(deck.EquinumArray, adjustedValue - 1, iStart, iEnd, jStart, jEnd, kStart, kEnd, deck.NX, deck.NY, totalCells, targetProp);
+                            break;
+
+                        case "FLUXNUM":
+                            if (deck.FluxnumArray.Count == 0) InitializeUniformArray(deck.FluxnumArray, totalCells, 1);
+                            ApplyIntEqualsOverride(deck.FluxnumArray, adjustedValue, iStart, iEnd, jStart, jEnd, kStart, kEnd, deck.NX, deck.NY, totalCells, targetProp);
+                            break;
+
+                        case "MULTNUM":
+                            if (deck.MultnumArray.Count == 0) InitializeUniformArray(deck.MultnumArray, totalCells, 1);
+                            ApplyIntEqualsOverride(deck.MultnumArray, adjustedValue, iStart, iEnd, jStart, jEnd, kStart, kEnd, deck.NX, deck.NY, totalCells, targetProp);
+                            break;
+                    }
+                }
             }
-            return (array, offset);
         }
 
-        // Stores the values of an integer grid array keyword (ACTNUM, SATNUM, ...): inside a BOX only the boxed cells,
-        // like the decimal arrays below (before, a boxed SATNUM replaced the whole array with a short one).
-        private List<int> StoreGridArray(List<int> current, List<int> values, EclipseDataDeck deck, int fill)
+        private static void ApplyIntEqualsOverride(List<int> array, double value, int iStart, int iEnd, int jStart, int jEnd, int kStart, int kEnd, int nx, int ny, int totalCells, string propName)
         {
-            if (box is not { } b) return values;
-
-            int totalCells = deck.NX * deck.NY * deck.NZ;
-            var result = current.Count == totalCells ? current : new List<int>(Enumerable.Repeat(fill, totalCells));
-            int n = 0;
-            for (int k = b.K1; k <= b.K2; k++)
-                for (int j = b.J1; j <= b.J2; j++)
-                    for (int i = b.I1; i <= b.I2 && n < values.Count; i++)
-                        result[(k - 1) * deck.NX * deck.NY + (j - 1) * deck.NX + (i - 1)] = values[n++];
-            return result;
+            int modificationCount = 0;
+            for (int k = kStart; k <= kEnd; k++)
+            {
+                for (int j = jStart; j <= jEnd; j++)
+                {
+                    for (int i = iStart; i <= iEnd; i++)
+                    {
+                        int flatIndex = (k - 1) * nx * ny + (j - 1) * nx + (i - 1);
+                        if (flatIndex >= 0 && flatIndex < totalCells)
+                        {
+                            array[flatIndex] = (int)value;
+                            modificationCount++;
+                        }
+                    }
+                }
+            }
+            Console.WriteLine($"      [ARRAY MODIFICATION - EQUALS] Modified '{propName}': Assigned region index {(int)value} across {modificationCount} cells [Box I:{iStart}-{iEnd}, J:{jStart}-{jEnd}, K:{kStart}-{kEnd}]");
         }
 
         // Stores the values of a grid array keyword (PORO, PERMX, NTG, TOPS, ...). Inside a BOX they fill only the
@@ -1085,17 +1243,23 @@ namespace EclipseDeckReader
                 string relativePath = tokens[index].Content.ToString().Trim('\'').Trim('"');
                 index++;
 
-                string normalizedPath = relativePath.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
-
-                // A relative path is looked up from the main deck's folder first (ECLIPSE/OPM), then from the folder of
-                // the file holding the INCLUDE (the old behaviour), so nested includes like INCLUDE/props.inc ->
-                // 'INCLUDE/swof.inc' are found either way
                 string baseDir = Path.GetDirectoryName(baseFilePath) ?? "";
-                string fullSubFilePath = "";
-                foreach (var dir in new[] { mainDeckDirectory, baseDir }.Where(d => d.Length > 0).Distinct())
+                string normalizedPath = relativePath.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
+                string fullSubFilePath = Path.Combine(baseDir, normalizedPath);
+
+                if (!File.Exists(fullSubFilePath))
                 {
-                    fullSubFilePath = FindIncludeFile(dir, normalizedPath);
-                    if (File.Exists(fullSubFilePath)) break;
+                    string fileName = Path.GetFileName(normalizedPath);
+                    string subDirRel = Path.GetDirectoryName(normalizedPath) ?? "";
+                    string targetDir = Path.GetFullPath(Path.Combine(baseDir, subDirRel));
+
+                    if (Directory.Exists(targetDir))
+                    {
+                        string matchedFile = Directory.GetFiles(targetDir)
+                            .FirstOrDefault(f => Path.GetFileName(f).Equals(fileName, StringComparison.OrdinalIgnoreCase));
+
+                        if (matchedFile != null) fullSubFilePath = matchedFile;
+                    }
                 }
 
                 if (File.Exists(fullSubFilePath))
@@ -1111,18 +1275,6 @@ namespace EclipseDeckReader
                 }
             }
             if (index < tokens.Count && tokens[index].Type == TokenType.Slash) index++;
-        }
-
-        // The include file under dir, matching the file name without regard to case (deck paths often differ in case)
-        private static string FindIncludeFile(string dir, string normalizedPath)
-        {
-            string path = Path.Combine(dir, normalizedPath);
-            if (File.Exists(path)) return path;
-
-            string fileName = Path.GetFileName(normalizedPath);
-            string targetDir = Path.GetFullPath(Path.Combine(dir, Path.GetDirectoryName(normalizedPath) ?? ""));
-            if (!Directory.Exists(targetDir)) return path;
-            return Directory.GetFiles(targetDir).FirstOrDefault(f => Path.GetFileName(f).Equals(fileName, StringComparison.OrdinalIgnoreCase)) ?? path;
         }
 
         // FAULTS: 'NAME' I1 I2 J1 J2 K1 K2 FACE / ... ending with a lone '/'. A fault usually has many records,
@@ -1185,42 +1337,18 @@ namespace EclipseDeckReader
                 if (index >= tokens.Count) break;
                 if (tokens[index].Type == TokenType.Slash) { index++; break; }   // lone '/': end of keyword
 
-                records.Add(ReadOneRecord(tokens, ref index));
+                var record = new List<string>();
+                while (index < tokens.Count && tokens[index].Type != TokenType.Slash)
+                {
+                    if (tokens[index].Type != TokenType.NewLine)
+                        record.Add(tokens[index].Content.ToString().Trim('\'').Trim('"'));
+                    index++;
+                }
+                index++;   // the record's '/'
+                records.Add(record);
             }
             return records;
         }
-
-        // Reads one record up to its '/', across line breaks, whatever kind of token each item is; quotes are removed
-        private static List<string> ReadOneRecord(List<Token> tokens, ref int index)
-        {
-            var record = new List<string>();
-            while (index < tokens.Count && tokens[index].Type != TokenType.Slash)
-            {
-                if (tokens[index].Type != TokenType.NewLine)
-                    record.Add(tokens[index].Content.ToString().Trim('\'').Trim('"'));
-                index++;
-            }
-            index++;   // the record's own '/'
-            return record;
-        }
-
-        // ECLIPSE's DENSITY defaults (oil, water, gas) in the deck's units: lb/ft3 (FIELD), kg/m3 (METRIC, PVT-M), g/cc (LAB)
-        private static (double Oil, double Water, double Gas) DefaultSurfaceDensities(string unitSystem) =>
-            unitSystem.ToUpperInvariant() switch
-            {
-                "METRIC" or "PVT-M" => (600.0, 999.014, 1.0),
-                "LAB" => (0.6, 0.999014, 0.001),
-                _ => (37.457, 62.366, 0.062428)
-            };
-
-        // One atmosphere in the deck's pressure units: ECLIPSE's default producer BHP limit (WCONPROD item 9)
-        private static double OneAtmosphere(string unitSystem) =>
-            unitSystem.ToUpperInvariant() switch
-            {
-                "METRIC" => 1.01325,
-                "LAB" or "PVT-M" => 1.0,
-                _ => 14.69595
-            };
 
         private static List<string> ReadRecordTokensUntilSlash(List<Token> tokens, ref int index)
         {
@@ -1303,8 +1431,7 @@ namespace EclipseDeckReader
                 double gRat = ParseOptionalDouble(record, 5);
                 double lRat = ParseOptionalDouble(record, 6);
                 double resRat = ParseOptionalDouble(record, 7);
-                // A defaulted BHP limit is one atmosphere in ECLIPSE; 0 read as "no limit" and let pressure fall below zero
-                double bhp = ParseOptionalDouble(record, 8, fallback: OneAtmosphere(deck.UnitSystem));
+                double bhp = ParseOptionalDouble(record, 8);
 
                 foreach (var wellData in ResolveMatchingWells(deck, wellPattern))
                 {

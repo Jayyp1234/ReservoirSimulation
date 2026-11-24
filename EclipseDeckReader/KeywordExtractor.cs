@@ -61,10 +61,9 @@ namespace EclipseDeckReader
 
                 if (starIdx > 0)
                 {
-                    if (int.TryParse(rawTokenStr.AsSpan(0, starIdx), out int count))
+                    if (int.TryParse(rawTokenStr.AsSpan(0, starIdx), out int count) &&
+                        double.TryParse(rawTokenStr.AsSpan(starIdx + 1), CultureInfo.InvariantCulture, out double val))
                     {
-                        // N*value repeats the value; a bare N* is N defaulted items, kept as 0 so later columns stay in place
-                        double val = double.TryParse(rawTokenStr.AsSpan(starIdx + 1), CultureInfo.InvariantCulture, out double v) ? v : 0.0;
                         for (int i = 0; i < count; i++) currentTable.Add(val);
                     }
                 }
@@ -108,9 +107,8 @@ namespace EclipseDeckReader
                 int starIdx = rawTokenStr.IndexOf('*');
                 if (starIdx > 0)
                 {
-                    // N*value repeats the value; a bare N* (defaulted items) used to throw a FormatException
                     int count = int.Parse(rawTokenStr.AsSpan(0, starIdx));
-                    double val = double.TryParse(rawTokenStr.AsSpan(starIdx + 1), CultureInfo.InvariantCulture, out double v) ? v : 0.0;
+                    double val = double.Parse(rawTokenStr.AsSpan(starIdx + 1), CultureInfo.InvariantCulture);
                     for (int i = 0; i < count; i++) dataValues.Add(val);
                 }
                 else
@@ -149,9 +147,8 @@ namespace EclipseDeckReader
                 int starIdx = rawTokenStr.IndexOf('*');
                 if (starIdx > 0)
                 {
-                    // A bare N* (defaulted) used to throw; integer grid arrays (ACTNUM, SATNUM, ...) default to 1
                     int count = int.Parse(rawTokenStr.AsSpan(0, starIdx));
-                    int val = int.TryParse(rawTokenStr.AsSpan(starIdx + 1), out int v) ? v : 1;
+                    int val = int.Parse(rawTokenStr.AsSpan(starIdx + 1));
                     for (int i = 0; i < count; i++) dataValues.Add(val);
                 }
                 else

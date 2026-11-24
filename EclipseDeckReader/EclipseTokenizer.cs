@@ -73,8 +73,6 @@ namespace EclipseDeckReader
                 {
                     tokens.Add(new Token(TokenType.Slash, fileContent.Slice(index, 1)));
                     index++;
-                    // ECLIPSE treats the rest of the line after a record's '/' as a comment
-                    while (index < length && span[index] != '\n' && span[index] != '\r') index++;
                     continue;
                 }
 
