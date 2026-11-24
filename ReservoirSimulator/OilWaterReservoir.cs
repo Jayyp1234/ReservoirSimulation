@@ -10,6 +10,7 @@ namespace ReservoirSimulator
     public class OilWaterReservoir
     {
         public int funcall;
+        public bool UseUpstreamWeightingForInjection = false;
         public List<double> Time, SweepEff;
         readonly Func<ADiff<Vector4d>, ADiff<Vector4d>> Er;
         (double maxDP, double maxDS, int i_p, int i_s) CheckSolution(double[] xs)
@@ -25,7 +26,7 @@ namespace ReservoirSimulator
             return (maxDp, maxDs, i_p, i_s);
         }
 
-        readonly int Nx, Ny, Nz, NxNy, Ngrids, NumActiveGrids, Nwells, NumWells;
+        readonly int Nx, Ny, Nz, NxNy, Ngrids, NumActiveGrids, NumWells;
         readonly double[] Kx, Ky, Kz, Φ, Dx, Dy, Dz, zTop;
         double[] Coord, Zcorn;
         readonly double Prefr, cr, γo0, γw0;
@@ -72,8 +73,11 @@ namespace ReservoirSimulator
             Φ = [.. Data.PorosityArray];
             Kx = [.. Data.PermXArray]; Ky = [.. Data.PermYArray]; Kz = [.. Data.PermZArray];
 
-            Grids = Zcorn is not null ? Utility.ProcessGrid<Vector4d>(Nx, Ny, Nz, Coord, Zcorn, Φ, Kx, Ky, Kz) :
-                Utility.ProcessGrid<Vector4d>(Nx, Ny, Nz, Dx, Dy, Dz, zTop, Φ, Kx, Ky, Kz);
+            // NTG and MULTPV default to 1 for every cell (set at DIMENS); a wrong-sized array is ignored rather than misread
+            double[]? ntg = Data.NtgArray.Count == Ngrids ? Data.NtgArray.ToArray() : null;
+            double[]? multpv = Data.MultpvArray.Count == Ngrids ? Data.MultpvArray.ToArray() : null;
+            Grids = Zcorn is not null ? Utility.ProcessGrid<Vector4d>(Nx, Ny, Nz, Coord, Zcorn, Φ, Kx, Ky, Kz, ntg, multpv) :
+                Utility.ProcessGrid<Vector4d>(Nx, Ny, Nz, Dx, Dy, Dz, zTop, Φ, Kx, Ky, Kz, ntg, multpv);
 
             // Process PVTW and PVDO tables.
             PVTWs = [.. Data.RawPvtwTables.Select(pvtw => new PVTWAnalysis(pvtw, incomingUnit))];
@@ -86,7 +90,10 @@ namespace ReservoirSimulator
 
             // Process SWOF tables.
             SWOFs = [.. Data.RawSwofTables.Select(swof => new SWOFAnalysis(swof, incomingUnit))];
-            foreach (var swof in SWOFs) swof.FitProperties();
+            foreach (var swof in SWOFs)
+            { 
+                swof.FitProperties(); 
+            }
 
             // ROCK
             cr = Data.RockCompressibility;
@@ -97,14 +104,27 @@ namespace ReservoirSimulator
             γo0 = Utility.Convert(Data.SurfaceOilDensity, "Density", incomingUnit, Units.FIELD) / 144;
             γw0 = Utility.Convert(Data.SurfaceWaterDensity, "Density", incomingUnit, Units.FIELD) / 144;
 
+            // MINPV: cells holding less pore volume than the deck's minimum are made inactive, as in ECLIPSE.
+            // A copy of ACTNUM is changed, so the deck itself keeps what the user wrote.
+            List<int> actnum = [.. Data.ActnumArray];
+            if (Data.MinPoreVolume > 0)
+            {
+                double minPv = Utility.Convert(Data.MinPoreVolume, "Reservoir Volume", incomingUnit, Units.FIELD);
+                int removed = 0;
+                for (int m = 0; m < Ngrids; m++)
+                    if (actnum[m] > 0 && Grids[m].PoreVolume < minPv) { actnum[m] = 0; removed++; }
+                Console.WriteLine($"      [Grid] MINPV {Data.MinPoreVolume}: {removed} cell(s) with less pore volume made inactive.");
+            }
+
             // REGION
-            NumActiveGrids = Utility.SetAcitveGrids(Grids, Data.ActnumArray, Er);
+            NumActiveGrids = Utility.SetAcitveGrids(Grids, actnum, Er);
             Utility.SetSWOF(Grids, Data.SatnumArray, SWOFs);
             Utility.SetPVDO(Grids, Data.PvtnumArray, PVDOs, γo0);
             Utility.SetPVTW(Grids, Data.PvtnumArray, PVTWs, γw0);
 
             // TRANSMISSIBILITY
             Utility.BuildStructuredConnections(Grids, Nx, Ny, Nz);
+            Utility.ApplyTransmissibilityMultipliers(Grids, Nx, Ny, Nz, Data);
             //Utility.ComputeFaceTransmissibility(Grids);
 
 
@@ -167,6 +187,9 @@ namespace ReservoirSimulator
 
             // WELLS
             Wells = [.. Data.Wells.Select(well => new Well<Vector4d>(well.Value, Nx, Ny, Nz, Grids, incomingUnit))];
+            foreach (var well in Wells.Where(w => w.PerfNatIndex.Count == 0))
+                Console.WriteLine($"      [Warning] Well '{well.Name}' has no completion in an active cell; it is left out of the simulation.");
+            Wells.RemoveAll(w => w.PerfNatIndex.Count == 0);
             NumWells = Wells.Count;
         }
         public void Initialize()
@@ -185,8 +208,10 @@ namespace ReservoirSimulator
                 var oiltable = equildata.OilZonePressureDepthPairs;
                 var watertable = equildata.WaterZonePressureDepthPairs;
 
-                double poEquil = Utility.Interpolate(oiltable, grid.Center.Z, pair => pair.Z, pair => pair.P);
-                double pwEquil = Utility.Interpolate(watertable, grid.Center.Z, pair => pair.Z, pair => pair.P);
+                double z = grid.Center.Z;
+                double poEquil = Utility.Interpolate(oiltable, z, pair => pair.Z, pair => pair.P);
+                double pwEquil = Utility.Interpolate(watertable, z, pair => pair.Z, pair => pair.P);
+
                 double pc = poEquil - pwEquil;
 
                 double swMin = SWOFs[s].Result.SwMin, swMax = SWOFs[s].Result.SwMax;
@@ -212,26 +237,26 @@ namespace ReservoirSimulator
                     grid.Pw_n = poEquil - pcActual;
                 }
 
-                ADiff<Vector4d> meanP = grid.So_n * grid.Po_n + grid.Sw_n * grid.Pw_n;
-                ADiff<Vector4d> Er_i = grid.Er(meanP);
-                ADiff<Vector4d> Bo_i = grid.Bo(grid.Po_n);
-                ADiff<Vector4d> Bw_i = grid.Bw(grid.Pw_n);
+                var meanP = grid.So_n * grid.Po_n + grid.Sw_n * grid.Pw_n;
+                var Er_i = grid.Er(meanP);
+                var Bo_i = grid.Bo(grid.Po_n);
+                var Bw_i = grid.Bw(grid.Pw_n);
 
                 grid.ErSo_Bo_n = (Er_i * grid.So_n / Bo_i).Value;
                 grid.ErSw_Bw_n = (Er_i * grid.Sw_n / Bw_i).Value;
-                grid.SaveResult(po: grid.Po_n, pw: grid.Pw_n, so: grid.So_n, sw: grid.Sw_n);
+                grid.SaveResult(po: grid.Po_n, pw: grid.Pw_n, 
+                                so: grid.So_n, sw: grid.Sw_n);
             }
 
             foreach (var well in Wells)
             {
-                well.Pwf_n = well.PerfNatIndex.Select(m => Grids[m].Pw_n).Average();
+                well.Pwf_n = well.PerfNatIndex.Select(m => Grids[m].Po_n).Average();
                 well.SaveResult(pwf: well.Pwf_n, qo: well.Qo_n, qw: well.Qw_n);
             }
         }
         void InitialGuess(double[] xs, double dt, bool isRetry = false, bool wellEventOccurred = false)
         {
-            int indx = 0;
-            int n = Time.Count - 1;
+            int indx = 0, n = Time.Count - 1;
             bool canExtrapolate = n >= 2 && !isRetry && !wellEventOccurred;
             double omega = canExtrapolate ? Min(1.0, dt / (Time[n] - Time[n - 1])) : 0.0;
 
@@ -349,24 +374,9 @@ namespace ReservoirSimulator
             return (maxPd, maxSd);
         }
 
-        public static double[] GetCumulativeTimeArray(IReadOnlyList<double> timeSteps, bool includeZero = false)
-        {
-            int offset = includeZero ? 1 : 0;
-            double[] cumulative = new double[timeSteps.Count + offset];
-
-            double runningTotal = 0.0;
-            for (int i = 0; i < timeSteps.Count; i++)
-            {
-                runningTotal += timeSteps[i];
-                cumulative[i + offset] = runningTotal;
-            }
-
-            return cumulative;
-        }
-
         public void Simulate(double[] ResultTime = null)
         {
-            if(ResultTime == null) ResultTime = GetCumulativeTimeArray(DATA.TimeSteps);
+            if(ResultTime == null) ResultTime = Utility.GetCumulativeTimeArray(DATA.TimeSteps);
             int cores = Environment.ProcessorCount, chunkSize = Ngrids / cores;
 
             (int totalDofs, int[] col_index, int[] row_ptr, double[] JacValues) = ReservoirJacobian.Create(2, Grids, Wells);
@@ -516,14 +526,15 @@ namespace ReservoirSimulator
                 for (int wellidx = 0; wellidx < NumWells; wellidx++)
                 {
                     var well = Wells[wellidx];
+                    well.Qo_np1 = 0.0; well.Qw_np1 = 0.0; well.Ql_np1 = 0.0;
+                    well.Qo = 0.0; well.Qw = 0.0;
                     var wOff = well.Offset;
                     if (!well.isActive)
                     {
                         JacValues[wOff.RowFlow_dPwell] += 1;
                         JacValues[wOff.RowConst_dQwell] += 1;
-                        continue; 
+                        continue;
                     }
-                   
 
                     int rowflow = 2 * NumActiveGrids + 2 * wellidx + 0;  // Rate definition equation
                     int rowconst = 2 * NumActiveGrids + 2 * wellidx + 1; // Constraint equation
@@ -532,13 +543,11 @@ namespace ReservoirSimulator
                     var qwell = new ADiff<Vector4d>(xnp1[rowconst], new(0, 1, 0, 0));
                     var FlowRes = qwell * dt;
 
-                    well.Qo = default;
-                    well.Qw = default;
-
                     int perfCount = well.PerfNatIndex.Count;
                     bool isWaterTarget = well.IsWaterTarget;
                     bool isOilTarget = well.IsOilTarget;
                     bool isLiqTarget = well.IsLiqTarget;
+                    bool isResTarget = well.IsResTarget;
 
                     switch (well.WellType)
                     {
@@ -657,6 +666,7 @@ namespace ReservoirSimulator
 
                                     // Per-perforation grid derivatives for Row Q
                                     var perfRate = isWaterTarget ? rate_water
+                                                    : isLiqTarget ? rate_water
                                                     : rate_water * Bw_m;
 
                                     FlowRes -= perfRate * dt;
@@ -780,6 +790,7 @@ namespace ReservoirSimulator
 
             double L = 0, tnp1, rnorm = 0;
             bool tryingnewtimestep = true, isComplete;
+            int controlSwitches = 0;   // control switches made on the current step
             Time = [t];
 
             for (int i = 1; i < Interval.Count; i++)
@@ -799,6 +810,7 @@ namespace ReservoirSimulator
 
                     if (tryingnewtimestep)
                     {
+                        controlSwitches = 0;
                         foreach (var well in Wells)
                             well.UpdateControl(currentSimDate);
 
@@ -807,7 +819,7 @@ namespace ReservoirSimulator
                     }
 
                     // Prepare initial guess x^(0) from converged state n
-                    InitialGuess(xs, dt);
+                    InitialGuess(xs, dt, false, true);
 
                     Console.WriteLine($"""
                          iter |   Residual Norm
@@ -891,7 +903,7 @@ namespace ReservoirSimulator
                             well.ConstraintType = ConstraintType.MIN_BHP;
                             Console.WriteLine($"""
                             ===============================================================
-                            Rejected (Minimum Pressure Violated: {well.Pwf.Value:F2} < {prod.MinBhpLimit:F2} psi) @ {well.Name}
+                            Rejected (Minimum Pressure Violated: {well.Pwf_np1:F2} < {prod.MinBhpLimit:F2} psi) @ {well.Name}
                             ===============================================================
                             """);
                             well.Control_is_Violated = true;
@@ -901,28 +913,69 @@ namespace ReservoirSimulator
                             well.CurrentInjectorControl is { } inj &&
                             well.ConstraintType != ConstraintType.MAX_BHP &&
                             inj.MaxBhpLimit > 0.0 &&
-                            well.Pwf.Value > (inj.MaxBhpLimit + 1e-2))
+                            well.Pwf_np1 > (inj.MaxBhpLimit + 1e-2))   // was well.Pwf.Value: Pwf is never set, so always 0
                         {
                             well.ConstraintType = ConstraintType.MAX_BHP;
                             Console.WriteLine($"""
                                 ===============================================================
-                                Rejected (Maximum Pressure Violated: {well.Pwf.Value:F2} > {inj.MaxBhpLimit:F2} psi) @ {well.Name}
+                                Rejected (Maximum Pressure Violated: {well.Pwf_np1:F2} > {inj.MaxBhpLimit:F2} psi) @ {well.Name}
                                 ===============================================================
                                 """);
+                            well.Control_is_Violated = true;
+                        }
+
+                        // Back to the deck's rate control when, at the BHP limit, the well would flow more than its target
+                        // (ECLIPSE does the same). Otherwise a well that once hit its limit stays on BHP and overshoots
+                        // its rate target for the rest of that control period.
+                        if (well.WellType == WellType.PRODUCER &&
+                            well.CurrentProducerControl is { } p &&
+                            well.ConstraintType == ConstraintType.MIN_BHP && well.DeckConstraint != ConstraintType.MIN_BHP)
+                        {
+                            var (rate, target) = well.DeckConstraint switch
+                            {
+                                ConstraintType.ORATE => (well.Qo_np1, p.OilRateTarget),
+                                ConstraintType.WRATE => (well.Qw_np1, p.WaterRateTarget),
+                                ConstraintType.LRATE => (well.Ql_np1, p.LiquidRateTarget),
+                                _ => (0.0, 0.0)
+                            };
+                            if (target > 0.0 && rate > target * (1 + 1e-4))
+                            {
+                                well.ConstraintType = well.DeckConstraint;
+                                Console.WriteLine($"[Info] {well.Name}: rate {rate:F2} above target {target:F2} at the BHP limit; back to rate control.");
+                                well.Control_is_Violated = true;
+                            }
+                        }
+
+                        if (well.WellType == WellType.INJECTOR &&
+                            well.CurrentInjectorControl is { } i2 &&
+                            well.ConstraintType == ConstraintType.MAX_BHP && well.DeckConstraint == ConstraintType.RATE &&
+                            Abs(well.Qw_np1) > Abs(i2.TargetRate) * (1 + 1e-4))
+                        {
+                            well.ConstraintType = ConstraintType.RATE;
+                            Console.WriteLine($"[Info] {well.Name}: rate {Abs(well.Qw_np1):F2} above target {Abs(i2.TargetRate):F2} at the BHP limit; back to rate control.");
                             well.Control_is_Violated = true;
                         }
                     }
                     if (Wells.Any(well => well.Control_is_Violated))
                     {
-                        tryingnewtimestep = false;
                         foreach(var well in Wells)
                             well.Control_is_Violated = false;
-                        continue;
+                        // Solve the same step again with the new controls; at most 4 times, so two controls that keep
+                        // undoing each other cannot loop for ever (the step is then accepted as solved).
+                        if (++controlSwitches <= 4)
+                        {
+                            tryingnewtimestep = false;
+                            continue;
+                        }
                     }
 
                     // Commit verified state n+1 -> n
                     t = tnp1;
                     Time.Add(t);
+                    // The next step loads the deck's controls and completions again. Without this, a BHP switch above
+                    // left the flag false for good, and later WCONPROD/WCONINJE/COMPDAT records were never loaded.
+                    // (A switch to BHP still carries over: UpdateControl resets the mode only for a new record.)
+                    tryingnewtimestep = true;
                     foreach (var grid in Grids)
                     {
                         if (!grid.isActive) continue;
