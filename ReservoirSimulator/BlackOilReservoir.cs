@@ -851,11 +851,43 @@ namespace ReservoirSimulator
 
                         case WellType.INJECTOR:
                             {
+                                // No cross-flow through an injector (ECLIPSE's XFLOW = NO). A connection whose cell
+                                // potential is above the wellbore's would flow from cell to well. The injection term
+                                // would then take the injected phase out of the cell with total mobility, even from a
+                                // cell that holds none of it: Newton asks for a negative saturation, the update holds
+                                // it at 0 and the step stalls (SPE10 model 1: a gas column in the well against an oil
+                                // gradient in the reservoir reverses the lower connections). Such a connection carries
+                                // nothing. If no connection injects at this iterate and the well is on rate control,
+                                // the one closest to injecting is kept so that the rate equation still depends on Pwf.
+                                double PotentialGap(int p)
+                                {
+                                    var g = Grids[well.PerfNatIndex[p]];
+                                    int a = g.ActiveIndex;
+                                    double z = g.Center.Z - well.Zref, po = xnp1[3 * a];
+                                    if (injectsGas)
+                                    {
+                                        double pg = po + g.Pcog(xnp1[3 * a + 2]).Value;
+                                        return pg - pwell.Value - 0.5 * (g.γg(pg).Value + g.γg(pwell.Value).Value) * z;
+                                    }
+                                    double pw = po - g.Pcow(xnp1[3 * a + 1]).Value;
+                                    return pw - pwell.Value - 0.5 * (g.γw(pw).Value + g.γw(pwell.Value).Value) * z;
+                                }
+                                int kept = -1; bool anyInjecting = false; double smallestGap = double.MaxValue;
+                                for (int p = 0; p < perfCount; p++)
+                                {
+                                    if (!well.PerfIsOpen[p] || !Grids[well.PerfNatIndex[p]].isActive) continue;
+                                    double gap = PotentialGap(p);
+                                    if (gap < 0.0) anyInjecting = true;
+                                    if (gap < smallestGap) { smallestGap = gap; kept = p; }
+                                }
+                                if (anyInjecting || well.ConstraintType == ConstraintType.MAX_BHP) kept = -1;
+
                                 for (int p = 0; p < perfCount; p++)
                                 {
                                     int m = well.PerfNatIndex[p];
                                     var mgrid = Grids[m];
                                     if (!well.PerfIsOpen[p] || !mgrid.isActive) continue;
+                                    if (p != kept && PotentialGap(p) >= 0.0) continue;   // would flow backwards: carries nothing
 
                                     int i = mgrid.ActiveIndex;
                                     int row_o = 3 * i + 0;
