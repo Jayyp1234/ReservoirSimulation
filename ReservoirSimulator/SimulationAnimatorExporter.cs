@@ -132,7 +132,8 @@ namespace ReservoirSimulator
                 if (_isBlackOil)
                 {
                     _pg![cell] = grid.PG[n];
-                    _pb![cell] = grid.PB[n];
+                    // Bubble point is not saved by the dead-oil model (PB stays empty); write 0 instead of throwing
+                    _pb![cell] = n < grid.PB.Count ? grid.PB[n] : 0.0;
                     _sg![cell] = grid.SG[n];
                 }
             }

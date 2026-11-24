@@ -430,7 +430,8 @@ namespace ReservoirSimulator
             foreach (var grid in Grids)
             {
                 if (!grid.isActive) continue;
-                int n = Satnum[grid.GlobalIndex];   
+                int n = Satnum[grid.GlobalIndex];
+                grid.Swco = swof[n].Result.Swi;
                 grid.Krw = Sw => swof[n].Result.EvaluateKrw(Sw);
                 grid.Krow = Sw => swof[n].Result.EvaluateKrow(Sw);
                 grid.Pcow = Sw => swof[n].Result.EvaluatePcow(Sw);
