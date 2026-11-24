@@ -96,7 +96,9 @@ namespace ReservoirSimulator
             }
 
             // ROCK
-            cr = Data.RockCompressibility;
+            // Converted like the reference pressure: a METRIC deck gives 1/bar, and pressures here are psi
+            // (it was used unconverted, 14.5 times too large)
+            cr = Utility.Convert(Data.RockCompressibility, "Compressibility", incomingUnit, Units.FIELD);
             Prefr = Utility.Convert(Data.RockReferencePressure, "Pressure", incomingUnit, Units.FIELD);
             Er = P => Exp(cr * (P - Prefr));
 
@@ -303,6 +305,9 @@ namespace ReservoirSimulator
                         case ConstraintType.LRATE:
                             qGuess = prod.LiquidRateTarget;
                             break;
+                        case ConstraintType.RESV:
+                            qGuess = prod.ResvRateTarget;
+                            break;
                     }
                 }
                 else if (well.WellType == WellType.INJECTOR && well.CurrentInjectorControl is { } inj)
@@ -314,6 +319,9 @@ namespace ReservoirSimulator
                             break;
                         case ConstraintType.RATE:
                             qGuess = inj.TargetRate;
+                            break;
+                        case ConstraintType.RESV:
+                            qGuess = inj.ResvRateTarget;
                             break;
                     }
                 }
@@ -729,7 +737,8 @@ namespace ReservoirSimulator
                     if (!well.isActive) continue;
 
                     bool isProducer = well.WellType == WellType.PRODUCER;
-                    well.Zref = isProducer ? well.HighestZref : well.LowestZref;
+                    // (The BHP reference depth is set in Well.UpdateCompletion. Overwriting it here, as before, threw
+                    // away the WELSPECS depth from the second Newton iteration on.)
 
                     int row0 = wellOffset + 2 * wellidx + 0;
                     int row1 = wellOffset + 2 * wellidx + 1;
@@ -756,7 +765,7 @@ namespace ReservoirSimulator
                         else if (!isProducer && well.CurrentInjectorControl is { } inj)
                         {
                             bhpLimit = inj.MaxBhpLimit;
-                            targetRate = inj.TargetRate;
+                            targetRate = well.ConstraintType == ConstraintType.RESV ? inj.ResvRateTarget : inj.TargetRate;
                         }
                     }
 

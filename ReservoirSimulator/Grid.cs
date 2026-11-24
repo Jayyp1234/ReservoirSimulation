@@ -25,15 +25,24 @@ namespace ReservoirSimulator
         public ADiff<T> ErSo_Bo_np1, ErSw_Bw_np1, ErSg_Bg_np1;
         public Func<ADiff<T>, ADiff<T>> Krw, Krow, Krg, Krog, Pcow, Pcog, Pcgw, Bo, Bw, Bg, μo, μw, μg, γo, γw, γg, Er, Rs, Rv;
         
-        // Baker's 3-phase relative permeability (smooth everywhere on the Sw-Sg triangle)
+        // Connate water saturation of the cell's SWOF table (set by Utility.SetSWOF)
+        public double Swco { get; set; }
+
+        // Three-phase oil relative permeability, the ECLIPSE default model (also OPM's default):
+        // Kro = [(Sw - Swco) Krow + Sg Krog] / [(Sw - Swco) + Sg], with both two-phase curves read at the cell's oil
+        // saturation So = 1 - Sw - Sg: Krow from SWOF at Sw' = 1 - So, Krog from SGOF at Sg' = 1 - Swco - So.
+        // Two errors before: the weight used Sw instead of Sw - Swco (oil too mobile where gas had come in; at connate
+        // water Kro must equal Krog(Sg)), and the curves were read at the cell's own Sw and Sg, so in the gas cap
+        // (Sw = Swco, So = 0) Krow(Swco) = 1 gave oil a mobility in a cell with no oil and the Newton step stalled.
         public ADiff<T> Kro(ADiff<T> sw, ADiff<T> sg)
         {
-            var krow = Krow(sw);
-            var krog = Krog(sg);
-            var swEff = sw;
+            var swEff = sw - Swco;
+            if (swEff.Value < 0.0) swEff = 0.0 * sw;
+            var krow = Krow(Swco + swEff + sg);   // SWOF at Sw' = 1 - So
+            var krog = Krog(swEff + sg);          // SGOF at Sg' = 1 - Swco - So
             var denom = swEff + sg;
 
-            // When Sg == 0 and Sw == Swi, Kro = Krow(Swi) = 1.0
+            // At Sg = 0 and Sw = Swco both weights vanish: Kro = Krow(Swco), the end point
             if (denom.Value <= 1e-12)
                 return krow;
 

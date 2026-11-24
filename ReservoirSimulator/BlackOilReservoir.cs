@@ -81,31 +81,34 @@ namespace ReservoirSimulator
             // NTG and MULTPV default to 1 for every cell (set at DIMENS); a wrong-sized array is ignored rather than misread
             double[]? ntg = Data.NtgArray.Count == Ngrids ? Data.NtgArray.ToArray() : null;
             double[]? multpv = Data.MultpvArray.Count == Ngrids ? Data.MultpvArray.ToArray() : null;
-            Grids = Zcorn is not null ? Utility.ProcessGrid<Vector6d>(Nx, Ny, Nz, Coord, Zcorn, Φ, Kx, Ky, Kz) :
-                Utility.ProcessGrid<Vector6d>(Nx, Ny, Nz, Dx, Dy, Dz, zTop, Φ, Kx, Ky, Kz);
+            // NTG and MULTPV were computed above but not passed, so the black-oil grid ignored both
+            Grids = Zcorn is not null ? Utility.ProcessGrid<Vector6d>(Nx, Ny, Nz, Coord, Zcorn, Φ, Kx, Ky, Kz, ntg, multpv) :
+                Utility.ProcessGrid<Vector6d>(Nx, Ny, Nz, Dx, Dy, Dz, zTop, Φ, Kx, Ky, Kz, ntg, multpv);
 
-            // Process PVTW, PVDO, and PVDG tables.
+            // This model needs dead oil, dry gas and water tables plus both saturation tables
+            if (Data.RawPvdoTables.Count == 0 || Data.RawPvdgTables.Count == 0 || Data.RawPvtwTables.Count == 0 ||
+                Data.RawSwofTables.Count == 0 || Data.RawSgofTables.Count == 0)
+                throw new InvalidOperationException("BlackOilReservoir needs PVDO, PVDG, PVTW, SWOF and SGOF; use OilWaterReservoir for an oil-water deck.");
+
+            // Process PVTW, PVDO, and PVDG tables. Each list is fitted on its own: PVDG used to be fitted inside the PVTW
+            // loop, so a deck with fewer PVDG than PVTW tables threw IndexOutOfRange.
             PVTWs = [.. Data.RawPvtwTables.Select(pvtw => new PVTWAnalysis(pvtw, incomingUnit))];
             PVDOs = [.. Data.RawPvdoTables.Select(pvdo => new PVDOAnalysis(pvdo, incomingUnit))];
             PVDGs = [.. Data.RawPvdgTables.Select(pvdg => new PVDGAnalysis(pvdg, incomingUnit))];
-            for (int i = 0; i < PVTWs.Length; i++)
-            {
-                PVTWs[i].FitProperties();
-                PVDOs[i].FitProperties();
-                PVDGs[i].FitProperties();
-            }
+            foreach (var pvtw in PVTWs) pvtw.FitProperties();
+            foreach (var pvdo in PVDOs) pvdo.FitProperties();
+            foreach (var pvdg in PVDGs) pvdg.FitProperties();
 
-            // Process SWOF and SGOF tables.
+            // Process SWOF and SGOF tables. SWOF was fitted only inside the SGOF loop; SGOF uses the connate water of
+            // the SWOF table of the same saturation region
             SWOFs = [.. Data.RawSwofTables.Select(swof => new SWOFAnalysis(swof, incomingUnit))];
             SGOFs = [.. Data.RawSgofTables.Select(sgof => new SGOFAnalysis(sgof, incomingUnit))];
+            foreach (var swof in SWOFs) swof.FitProperties();
             for (int i = 0; i < SGOFs.Length; i++)
-            {
-                SWOFs[i].FitProperties();
-                SGOFs[i].FitProperties(SWOFs[i].Result.Swi);
-            }
+                SGOFs[i].FitProperties(SWOFs[Min(i, SWOFs.Length - 1)].Result.Swi);
 
-            // ROCK
-            cr = Data.RockCompressibility;
+            // ROCK (compressibility converted from deck units, like the oil-water model)
+            cr = Utility.Convert(Data.RockCompressibility, "Compressibility", incomingUnit, Units.FIELD);
             Prefr = Utility.Convert(Data.RockReferencePressure, "Pressure", incomingUnit, Units.FIELD);
             Er = P => Exp(cr * (P - Prefr));
 
@@ -117,8 +120,19 @@ namespace ReservoirSimulator
             γw0 = Utility.Convert(Data.SurfaceWaterDensity, "Density", incomingUnit, Units.FIELD) / 144.0;
             γg0 = (Utility.Convert(Data.SurfaceGasDensity, "Density", incomingUnit, Units.FIELD) / 144.0) * (SCF_PER_MSCF / FT3_PER_BBL);
 
+            // MINPV: cells holding less pore volume than the deck's minimum are made inactive (as in the oil-water model)
+            List<int> actnum = [.. Data.ActnumArray];
+            if (Data.MinPoreVolume > 0)
+            {
+                double minPv = Utility.Convert(Data.MinPoreVolume, "Reservoir Volume", incomingUnit, Units.FIELD);
+                int removed = 0;
+                for (int m = 0; m < Ngrids; m++)
+                    if (actnum[m] > 0 && Grids[m].PoreVolume < minPv) { actnum[m] = 0; removed++; }
+                Console.WriteLine($"      [Grid] MINPV {Data.MinPoreVolume}: {removed} cell(s) with less pore volume made inactive.");
+            }
+
             // REGION
-            NumActiveGrids = Utility.SetAcitveGrids(Grids, Data.ActnumArray, Er);
+            NumActiveGrids = Utility.SetAcitveGrids(Grids, actnum, Er);
             Utility.SetSWOF(Grids, Data.SatnumArray, SWOFs);
             Utility.SetSGOF(Grids, Data.SatnumArray, SGOFs);
             Utility.SetPVDO(Grids, Data.PvtnumArray, PVDOs, γo0);
@@ -127,6 +141,8 @@ namespace ReservoirSimulator
 
             // TRANSMISSIBILITY
             Utility.BuildStructuredConnections(Grids, Nx, Ny, Nz);
+            // Faults (MULTFLT), MULTX/Y/Z and MULTREGT; never called here before, so every fault was fully open
+            Utility.ApplyTransmissibilityMultipliers(Grids, Nx, Ny, Nz, Data);
             //Utility.ComputeFaceTransmissibility(Grids);
 
 
@@ -197,7 +213,12 @@ namespace ReservoirSimulator
                         int nGas = StepsFor(MinZ, equildata.ZGOC);
                         var gasUp = Utility.IntegrateLegRK4(equildata.ZGOC, equildata.PgGOC, MinZ, nGas, γg);
                         var oilUp = Utility.IntegrateLegRK4(equildata.ZGOC, equildata.PoGOC, MinZ, nGas, γo);
-                        var watUp = Utility.IntegrateLegRK4(equildata.ZGOC, equildata.PoGOC - equildata.PcWOC, MinZ, nGas, γw);
+                        // Water pressure at the GOC comes from the water gradient carried up from the WOC (as watMid
+                        // below does). It used to start from PoGOC - PcWOC, as if the WOC were at the GOC, which put
+                        // a jump in water pressure at the GOC and started the bottom of the gas cap water-filled.
+                        double pwGOC = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PwWOC, equildata.ZGOC,
+                            StepsFor(equildata.ZWOC, equildata.ZGOC, 10), γw).Last().P;
+                        var watUp = Utility.IntegrateLegRK4(equildata.ZGOC, pwGOC, MinZ, nGas, γw);
 
                         gasUp.Reverse(); oilUp.Reverse(); watUp.Reverse();
 
@@ -246,7 +267,7 @@ namespace ReservoirSimulator
             }
 
             // WELLS
-            Wells = [.. Data.Wells.Select(well => new Well<Vector6d>(well.Value, Nx, Ny, Nz, Grids, incomingUnit))];
+            Wells = [.. Data.Wells.Select(well => new Well<Vector6d>(well.Value, Nx, Ny, Nz, Grids, incomingUnit) { AllowGasInjection = true })];
             foreach (var well in Wells.Where(w => w.PerfNatIndex.Count == 0))
                 Console.WriteLine($"      [Warning] Well '{well.Name}' has no completion in an active cell; it is left out of the simulation.");
             Wells.RemoveAll(w => w.PerfNatIndex.Count == 0);
@@ -409,6 +430,9 @@ namespace ReservoirSimulator
                         case ConstraintType.LRATE:
                             qGuess = prod.LiquidRateTarget;
                             break;
+                        case ConstraintType.RESV:
+                            qGuess = prod.ResvRateTarget;
+                            break;
                     }
                 }
                 else if (well.WellType == WellType.INJECTOR && well.CurrentInjectorControl is { } inj)
@@ -420,6 +444,9 @@ namespace ReservoirSimulator
                             break;
                         case ConstraintType.RATE:
                             qGuess = inj.TargetRate;
+                            break;
+                        case ConstraintType.RESV:
+                            qGuess = inj.ResvRateTarget;
                             break;
                     }
                 }
@@ -640,10 +667,14 @@ namespace ReservoirSimulator
                                 var DΦw = Pw_i - Pw_j - γw_avg * dz;
                                 var DΦg = Pg_i - Pg_j - γg_avg * dz;
 
-                                // Upstream phase mobilities
-                                var λo_up = Utility.SmoothUpstream(DΦo, λo_i, λo_j);
-                                var λw_up = Utility.SmoothUpstream(DΦw, λw_i, λw_j);
-                                var λg_up = Utility.SmoothUpstream(DΦg, λg_i, λg_j);
+                                // Upstream phase mobilities, taken fully from the upstream cell (eps 0). The smoothed
+                                // version blends both cells within +/-0.01 psi of potential; across a gas-oil contact the
+                                // gas potentials differ by only a fraction of a psi, so a cell with no gas could send gas
+                                // out using its neighbour's mobility. Newton then wanted Sg < 0, the update held Sg at 0,
+                                // and the step stalled (HAND_G: 10,500 rejected steps, 32,749 steps for one year).
+                                var λo_up = Utility.SmoothUpstream(DΦo, λo_i, λo_j, 0.0);
+                                var λw_up = Utility.SmoothUpstream(DΦw, λw_i, λw_j, 0.0);
+                                var λg_up = Utility.SmoothUpstream(DΦg, λg_i, λg_j, 0.0);
 
                                 // Outflow flux from cell i to cell j
                                 var FluxOil = transDt * λo_up * DΦo;
@@ -717,6 +748,8 @@ namespace ReservoirSimulator
                     bool isOilTarget = well.IsOilTarget;
                     bool isGasTarget = well.IsGasTarget;
                     bool isResTarget = well.IsResTarget;
+                    bool injectsGas = well.CurrentInjectorControl is { } injCtl &&
+                        string.Equals(injCtl.InjectionPhase?.Trim(), "GAS", StringComparison.OrdinalIgnoreCase);
 
                     switch (well.WellType)
                     {
@@ -794,10 +827,13 @@ namespace ReservoirSimulator
                                     JacValues[cOff.Diag[7]] += rate_gas.Derivative[4] * dt;
                                     JacValues[cOff.Diag[8]] += rate_gas.Derivative[5] * dt;
 
-                                    // Per-perforation grid derivatives for Row Q
+                                    // Per-perforation grid derivatives for Row Q. The rate unknown is the controlled
+                                    // rate: one surface phase, liquid (LRAT) or reservoir volume (RESV, rb/d: Bo, Bw in
+                                    // rb/stb and Bg in rb/Mscf). RESV used to fall through to oil + water at surface.
                                     var perfRate = isWaterTarget ? rate_water
                                                     : isOilTarget ? rate_oil
                                                     : isGasTarget ? rate_gas
+                                                    : isResTarget ? rate_oil * Bo_m + rate_water * Bw_m + rate_gas * Bg_m
                                                     : rate_oil + rate_water;
 
                                     FlowRes -= perfRate * dt;
@@ -846,12 +882,17 @@ namespace ReservoirSimulator
                                     var γg_m = mgrid.γg(Pg_m);
                                     var γw_m = mgrid.γw(Pw_m);
 
-                                    var lambdaTotal = (Krw_m / μw_m + Kro_m / μo_m + Krg_m / μg_m) / Bw_m;
-                                    if (isWaterTarget)
+                                    // Which phase goes in is set by WCONINJE item 2, whatever the control. It used to be
+                                    // chosen by isWaterTarget/isGasTarget, which are false under BHP or RESV control, so
+                                    // an injector on BHP put nothing into the reservoir.
+                                    var mobilityTotal = Krw_m / μw_m + Kro_m / μo_m + Krg_m / μg_m;
+                                    if (!injectsGas)
                                     {
                                         var γw_well = mgrid.γw(pwell);
                                         var γw_avg = 0.5 * (γw_m + γw_well);
                                         var DΦw = Pw_m - pwell - γw_avg * dz;
+                                        // Total mobility converted to surface water with Bw
+                                        var lambdaTotal = mobilityTotal / Bw_m;
                                         if (UseUpstreamWeightingForInjection)
                                             lambdaTotal = mgrid.Krw(1) / (μw_m * Bw_m);
                                         var WIw = mgrid.WI * lambdaTotal;
@@ -859,8 +900,6 @@ namespace ReservoirSimulator
 
                                         // Reservoir water equation (injection is inflow: rate * dt)
                                         Res[row_w] += rate_water.Value * dt;
-
-                                        // Reservoir water equation (injection is inflow: rate * dt)
                                         JacValues[wOff.Rm_dPwell[p][1]] += rate_water.Derivative[0] * dt;
 
                                         var cOff = mgrid.Offset;
@@ -868,20 +907,24 @@ namespace ReservoirSimulator
                                         JacValues[cOff.Diag[4]] += rate_water.Derivative[4] * dt;
                                         JacValues[cOff.Diag[5]] += rate_water.Derivative[5] * dt;
 
-
-                                        // Per-perforation grid derivatives for Row Q
-                                        var perfRate = isResTarget ? rate_water : rate_water * Bw_m;
+                                        // Row Q: the rate unknown is surface water (stb/d) unless the control is RESV
+                                        // (rb/d). The two were the other way round, so a RATE target was met in rb/d.
+                                        var perfRate = isResTarget ? rate_water * Bw_m : rate_water;
 
                                         FlowRes -= perfRate * dt;
                                         JacValues[wOff.RowFlow_dGrid[p][0]] -= perfRate.Derivative[3] * dt;
                                         JacValues[wOff.RowFlow_dGrid[p][1]] -= perfRate.Derivative[4] * dt;
                                         JacValues[wOff.RowFlow_dGrid[p][2]] -= perfRate.Derivative[5] * dt;
                                     }
-                                    if (isGasTarget)
+                                    else
                                     {
                                         var γg_well = mgrid.γg(pwell);
                                         var γg_avg = 0.5 * (γg_m + γg_well);
                                         var DΦg = Pg_m - pwell - γg_avg * dz;
+                                        // Total mobility converted to surface gas with Bg. It used to be divided by Bw,
+                                        // which turns reservoir barrels into barrels of water, not Mscf of gas. The error
+                                        // is the factor Bg/Bw: near 1 at 3000 psi, about 6 at 500 psi.
+                                        var lambdaTotal = mobilityTotal / Bg_m;
                                         if (UseUpstreamWeightingForInjection)
                                             lambdaTotal = mgrid.Krg(1) / (μg_m * Bg_m);
                                         var WIg = mgrid.WI * lambdaTotal;
@@ -895,8 +938,8 @@ namespace ReservoirSimulator
                                         JacValues[cOff.Diag[7]] += rate_gas.Derivative[4] * dt;
                                         JacValues[cOff.Diag[8]] += rate_gas.Derivative[5] * dt;
 
-                                        // Per-perforation grid derivatives for Row Q
-                                        var perfRate = isResTarget ? rate_gas : rate_gas * Bg_m;
+                                        // Row Q: surface gas (Mscf/d) unless RESV (rb/d)
+                                        var perfRate = isResTarget ? rate_gas * Bg_m : rate_gas;
 
                                         FlowRes -= perfRate * dt;
                                         JacValues[wOff.RowFlow_dGrid[p][0]] -= perfRate.Derivative[3] * dt;
@@ -948,15 +991,17 @@ namespace ReservoirSimulator
                     if (cnvGas > MaxCNV) MaxCNV = cnvGas;
                 }
 
-                // If you also have explicit well BHP equations at rows [2*NumActiveGrids .. totalRows-1]:
-                int wellOffset = 2 * NumActiveGrids;
+                // Well rows start after the 3 equations of every active cell. This was 2 * NumActiveGrids (copied from
+                // the oil-water model), so the well check read cell residuals and never looked at the well equations.
+                int wellOffset = 3 * NumActiveGrids;
                 for (int wellidx = 0; wellidx < NumWells; wellidx++)
                 {
                     var well = Wells[wellidx];
                     if (!well.isActive) continue;
 
                     bool isProducer = well.WellType == WellType.PRODUCER;
-                    well.Zref = isProducer ? well.HighestZref : well.LowestZref;
+                    // (The BHP reference depth is set in Well.UpdateCompletion. Overwriting it here threw away the
+                    // WELSPECS depth, and put injectors at their lowest connection.)
 
                     int row0 = wellOffset + 2 * wellidx + 0;
                     int row1 = wellOffset + 2 * wellidx + 1;
@@ -976,18 +1021,20 @@ namespace ReservoirSimulator
                                 ConstraintType.WRATE => prod.WaterRateTarget,
                                 ConstraintType.GRATE => prod.GasRateTarget,
                                 ConstraintType.LRATE => prod.LiquidRateTarget,
+                                ConstraintType.RESV => prod.ResvRateTarget,
                                 _ => Max(prod.OilRateTarget, Max(prod.WaterRateTarget, prod.LiquidRateTarget))
                             };
                         }
                         else if (!isProducer && well.CurrentInjectorControl is { } inj)
                         {
                             bhpLimit = inj.MaxBhpLimit;
-                            targetRate = inj.TargetRate;
+                            targetRate = well.ConstraintType == ConstraintType.RESV ? inj.ResvRateTarget : inj.TargetRate;
                         }
                     }
 
-                    // Current flowing rate provides a physical scale when under BHP control or STOP
-                    double currentFlowRate = Abs(well.Qo.Value) + Abs(well.Qw.Value);
+                    // Current flowing rate provides a physical scale when under BHP control or STOP (gas included,
+                    // so a gas well on BHP is not judged against a scale of 1)
+                    double currentFlowRate = Abs(well.Qo.Value) + Abs(well.Qw.Value) + Abs(well.Qg.Value);
                     double rateScale = Max(1.0, Max(Abs(targetRate), currentFlowRate));
 
                     // Equation 0: Wellbore rate balance / inflow equation [stb/day] -> normalized
@@ -1010,10 +1057,12 @@ namespace ReservoirSimulator
 
             double t = 0.0, dt = 0.1, dtCarry = 0.1;
             DateTime startDate = DATA.StartDate, currentSimDate;
+            // Events before START (date - 1 s) are dropped: they gave a negative first interval
             List<DateTime> Interval = [.. new DateTime[] { startDate }
                                 .Concat(Wells.SelectMany(well => well.GetEventTimes().Select(date=>date.AddSeconds(-1))))
                                 .Concat(ResultTime.Select(t => startDate.AddDays(t).AddSeconds(-1)))
                                 .Distinct()
+                                .Where(date => date >= startDate)
                                 .Order()];
 
             Console.WriteLine($"""
@@ -1024,6 +1073,7 @@ namespace ReservoirSimulator
 
             double L = 0, tnp1, rnorm = 0;
             bool tryingnewtimestep = true, isComplete;
+            int controlSwitches = 0;   // control switches made on the current step
             Time = [t];
 
             for (int i = 1; i < Interval.Count; i++)
@@ -1043,6 +1093,7 @@ namespace ReservoirSimulator
 
                     if (tryingnewtimestep)
                     {
+                        controlSwitches = 0;
                         foreach (var well in Wells)
                             well.UpdateControl(currentSimDate);
 
@@ -1135,7 +1186,7 @@ namespace ReservoirSimulator
                             well.ConstraintType = ConstraintType.MIN_BHP;
                             Console.WriteLine($"""
                             ===============================================================
-                            Rejected (Minimum Pressure Violated: {well.Pwf.Value:F2} < {prod.MinBhpLimit:F2} psi) @ {well.Name}
+                            Rejected (Minimum Pressure Violated: {well.Pwf_np1:F2} < {prod.MinBhpLimit:F2} psi) @ {well.Name}
                             ===============================================================
                             """);
                             well.Control_is_Violated = true;
@@ -1145,41 +1196,89 @@ namespace ReservoirSimulator
                             well.CurrentInjectorControl is { } inj &&
                             well.ConstraintType != ConstraintType.MAX_BHP &&
                             inj.MaxBhpLimit > 0.0 &&
-                            well.Pwf.Value > (inj.MaxBhpLimit + 1e-2))
+                            well.Pwf_np1 > (inj.MaxBhpLimit + 1e-2))   // was well.Pwf.Value: Pwf is never set, so always 0
                         {
                             well.ConstraintType = ConstraintType.MAX_BHP;
                             Console.WriteLine($"""
                                 ===============================================================
-                                Rejected (Maximum Pressure Violated: {well.Pwf.Value:F2} > {inj.MaxBhpLimit:F2} psi) @ {well.Name}
+                                Rejected (Maximum Pressure Violated: {well.Pwf_np1:F2} > {inj.MaxBhpLimit:F2} psi) @ {well.Name}
                                 ===============================================================
                                 """);
                             well.Control_is_Violated = true;
+                        }
+
+                        // Back to the deck's rate control when, at the BHP limit, the well would flow more than its target
+                        // (as in the oil-water model and ECLIPSE)
+                        if (well.WellType == WellType.PRODUCER &&
+                            well.CurrentProducerControl is { } p &&
+                            well.ConstraintType == ConstraintType.MIN_BHP && well.DeckConstraint != ConstraintType.MIN_BHP)
+                        {
+                            var (rate, target) = well.DeckConstraint switch
+                            {
+                                ConstraintType.ORATE => (well.Qo_np1, p.OilRateTarget),
+                                ConstraintType.WRATE => (well.Qw_np1, p.WaterRateTarget),
+                                ConstraintType.GRATE => (well.Qg_np1, p.GasRateTarget),
+                                ConstraintType.LRATE => (well.Ql_np1, p.LiquidRateTarget),
+                                _ => (0.0, 0.0)
+                            };
+                            if (target > 0.0 && rate > target * (1 + 1e-4))
+                            {
+                                well.ConstraintType = well.DeckConstraint;
+                                Console.WriteLine($"[Info] {well.Name}: rate {rate:F2} above target {target:F2} at the BHP limit; back to rate control.");
+                                well.Control_is_Violated = true;
+                            }
+                        }
+
+                        if (well.WellType == WellType.INJECTOR &&
+                            well.CurrentInjectorControl is { } i2 &&
+                            well.ConstraintType == ConstraintType.MAX_BHP && well.DeckConstraint == ConstraintType.RATE)
+                        {
+                            bool gasInj = string.Equals(i2.InjectionPhase?.Trim(), "GAS", StringComparison.OrdinalIgnoreCase);
+                            double injRate = Abs(gasInj ? well.Qg_np1 : well.Qw_np1);
+                            if (injRate > Abs(i2.TargetRate) * (1 + 1e-4))
+                            {
+                                well.ConstraintType = ConstraintType.RATE;
+                                Console.WriteLine($"[Info] {well.Name}: rate {injRate:F2} above target {Abs(i2.TargetRate):F2} at the BHP limit; back to rate control.");
+                                well.Control_is_Violated = true;
+                            }
                         }
                     }
                     if (Wells.Any(well => well.Control_is_Violated))
                     {
                         foreach (var well in Wells)
                             well.Control_is_Violated = false;
-                        continue;
+                        // Solve the same step again with the new controls, at most 4 times, so two controls that keep
+                        // undoing each other cannot loop for ever (the step is then accepted as solved)
+                        if (++controlSwitches <= 4)
+                        {
+                            tryingnewtimestep = false;
+                            continue;
+                        }
                     }
 
                     // Commit verified state n+1 -> n
                     t = tnp1;
                     Time.Add(t);
+                    // The next step loads the deck's controls and completions again (this flag was left false after
+                    // any rejected step, so later WCONPROD/WCONINJE/COMPDAT records were never loaded)
+                    tryingnewtimestep = true;
                     foreach (var grid in Grids)
                     {
                         if (!grid.isActive) continue;
                         grid.ErSo_Bo_n = grid.ErSo_Bo_np1.Value;
                         grid.ErSw_Bw_n = grid.ErSw_Bw_np1.Value;
-                        grid.Po_n = grid.Po_np1; grid.Sw_n = grid.Sw_np1;
-                        grid.Pw_n = grid.Pw_np1; grid.So_n = grid.So_np1;
-                        grid.SaveResult(po: grid.Po_n, pw: grid.Pw_n, so: grid.So_n, sw: grid.Sw_n);
+                        // Gas was never carried forward: every step measured the gas balance against the initial gas,
+                        // so free gas in place could not change from one step to the next
+                        grid.ErSg_Bg_n = grid.ErSg_Bg_np1.Value;
+                        grid.Po_n = grid.Po_np1; grid.Sw_n = grid.Sw_np1; grid.Sg_n = grid.Sg_np1;
+                        grid.Pw_n = grid.Pw_np1; grid.So_n = grid.So_np1; grid.Pg_n = grid.Pg_np1;
+                        grid.SaveResult(po: grid.Po_n, pw: grid.Pw_n, pg: grid.Pg_n, so: grid.So_n, sw: grid.Sw_n, sg: grid.Sg_n);
                     }
                     foreach (var well in Wells)
                     {
                         well.Pwf_n = well.Pwf_np1; well.Qo_n = well.Qo_np1;
-                        well.Ql_n = well.Ql_np1; well.Qw_n = well.Qw_np1;
-                        well.SaveResult(pwf: well.Pwf_n, qo: well.Qo_n, qw: well.Qw_n);
+                        well.Ql_n = well.Ql_np1; well.Qw_n = well.Qw_np1; well.Qg_n = well.Qg_np1;
+                        well.SaveResult(pwf: well.Pwf_n, qo: well.Qo_n, qw: well.Qw_n, qg: well.Qg_n);
                     }
 
                     isComplete = Abs(t - L) < 1e-13;
@@ -1224,14 +1323,16 @@ namespace ReservoirSimulator
             //VTUExporter.WriteVtuBinaryOilWater(outputDir, "OilWater.vtu", Grids);
             ExportWellVTK.ExportWells(outputDir, Grids, Wells);
 
-            var animatorExporter = new SimulationAnimatorExporter<Vector6d>(outputDir, Grids);
+            // isBlackOil: true so gas pressure and gas saturation are written (they were left out)
+            var animatorExporter = new SimulationAnimatorExporter<Vector6d>(outputDir, Grids, isBlackOil: true);
             for (int n = 0; n < Time.Count; n++)
                 animatorExporter.WriteTimeStep(Time, Grids, n);
 
 
             foreach (var well in Wells)
             {
-                List<ColVec> vectors = [Time, well.PWF, well.QO, well.QW];
+                // Columns: time, BHP, oil, water, gas rate
+                List<ColVec> vectors = [Time, well.PWF, well.QO, well.QW, well.QG];
                 string filename = Path.Combine(outputDir, $"{well.Name}.txt");
                 SepalSolver.Math.WriteMatrix(vectors, filename);
             }
