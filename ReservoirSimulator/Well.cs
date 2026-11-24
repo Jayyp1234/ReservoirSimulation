@@ -41,7 +41,16 @@ namespace ReservoirSimulator
         public string CurrentWellStatus { get; private set; } = "SHUT";
 
         public bool isActive => !string.Equals(CurrentWellStatus, "SHUT", StringComparison.OrdinalIgnoreCase)
-                             && (CurrentProducerControl is not null || CurrentInjectorControl is not null);
+                             && (CurrentProducerControl is not null || CurrentInjectorControl is not null)
+                             && !AllConnectionsShut;
+
+        // True when the well is open but every connection is shut (COMPDAT SHUT, or controls given before the COMPDAT
+        // date). It cannot flow, so it is treated as shut, as ECLIPSE does; a rate target with no open connection
+        // left its equations without a solution and stopped the run ("Time step is too small").
+        public bool AllConnectionsShut { get; private set; }
+
+        // Set by the black-oil model: gas injectors are then simulated instead of being shut
+        public bool AllowGasInjection { get; set; }
         public bool isStopped => string.Equals(CurrentWellStatus, "STOP", StringComparison.OrdinalIgnoreCase);
         public double Zref { get; set; }
         public double HighestZref { get; set; }
@@ -54,6 +63,7 @@ namespace ReservoirSimulator
         public List<double> PWF = [], QO = [], QW = [], QG = [];
 
         private readonly WellData _wellData;
+        private readonly Units _deckUnits;   // COMPDAT diameter and connection factor are converted from these
         private readonly bool _hasExplicitZref;
         private readonly double _alphaWell = 1.127e-3 * 2.0 * pi;
         private readonly Dictionary<int, int> _natIndexToPerfSlot = [];
@@ -62,6 +72,7 @@ namespace ReservoirSimulator
         public Well(WellData welldata, int nx, int ny, int nz, Grid<T>[] grids, Units incomingunit)
         {
             _wellData = welldata;
+            _deckUnits = incomingunit;
             Name = _wellData.Specification.WellName;
 
             double specZref = _wellData.Specification.ReferenceDepth;
@@ -130,6 +141,11 @@ namespace ReservoirSimulator
 
         private double ComputePeacemanWI(Grid<T> grid, WellCompletionRecord comp)
         {
+            // COMPDAT item 8: a connection factor given in the deck is used as it is (ECLIPSE); before, it was read
+            // and ignored. Its units, cP·rb/(d·psi) in FIELD, are those of this well index.
+            if (comp.TransmissibilityFactor > 0.0)
+                return Utility.Convert(comp.TransmissibilityFactor, "Transmissibility", _deckUnits, Units.FIELD);
+
             double DX = 0, DY = 0, DZ = 0;
             for (int c = 0; c < 8; c++)
             {
@@ -144,7 +160,11 @@ namespace ReservoirSimulator
             DY /= 4.0;
             DZ /= 4.0;
 
-            double radius = comp.WellBoreDiameter > 0.0 ? comp.WellBoreDiameter * 0.5 : 0.25;
+            // The diameter is in deck units (m in METRIC) and the cell sizes here are in ft; it was used unconverted,
+            // so 0.2 m was taken as 0.2 ft. Not given: 0.5 ft.
+            double radius = comp.WellBoreDiameter > 0.0
+                ? 0.5 * Utility.Convert(comp.WellBoreDiameter, "Wellbore Diameter", _deckUnits, Units.FIELD)
+                : 0.25;
             double skin = comp.EffectiveSkin;
             double kx = grid.Faces[1].Permeability;   // +I face: PERMX
             double ky = grid.Faces[2].Permeability;   // -J face: PERMY
@@ -209,8 +229,8 @@ namespace ReservoirSimulator
 
             if (useInjector)
             {
-                // Ignore gas injection schedules in 2-phase oil/water mode
-                if (string.Equals(latestInj!.InjectionPhase?.Trim(), "GAS", StringComparison.OrdinalIgnoreCase))
+                // Gas injection is shut in the two-phase oil/water model; the black-oil model allows it
+                if (!AllowGasInjection && string.Equals(latestInj!.InjectionPhase?.Trim(), "GAS", StringComparison.OrdinalIgnoreCase))
                 {
                     CurrentProducerControl = null;
                     CurrentInjectorControl = null;
@@ -252,6 +272,7 @@ namespace ReservoirSimulator
                 ? inj.ControlMode.ToUpperInvariant() switch
                 {
                     "RATE" => ConstraintType.RATE,
+                    "RESV" => ConstraintType.RESV,
                     "BHP" => ConstraintType.MAX_BHP,
                     _ => ConstraintType.RATE
                 }
@@ -262,6 +283,7 @@ namespace ReservoirSimulator
                         "WRAT" => ConstraintType.WRATE,
                         "GRAT" => ConstraintType.GRATE,
                         "LRAT" => ConstraintType.LRATE,
+                        "RESV" => ConstraintType.RESV,   // reservoir-volume rate; was mapped to ORAT
                         "BHP" => ConstraintType.MIN_BHP,
                         _ => ConstraintType.ORATE
                     }
@@ -272,6 +294,8 @@ namespace ReservoirSimulator
             for (int p = 0; p < PerfIsOpen.Count; p++)
                 PerfIsOpen[p] = false;
 
+            bool wasAllShut = AllConnectionsShut;
+            AllConnectionsShut = false;   // re-evaluated below for the date reached
             if (!isActive)
                 return;
 
@@ -328,6 +352,10 @@ namespace ReservoirSimulator
                 }
             }
 
+            AllConnectionsShut = openCount == 0;
+            if (AllConnectionsShut && !wasAllShut)
+                Console.WriteLine($"      [Warning] Well '{Name}' is open but all its connections are shut on {time:yyyy-MM-dd}; treated as shut.");
+
             if (openCount > 0)
             {
                 HighestZref = shallowestZ;
@@ -335,17 +363,18 @@ namespace ReservoirSimulator
                 HighestZPressure = shallowestP;
                 LowestZPressure = deepestP;
 
+                // BHP reference depth: WELSPECS item 5 when given, otherwise the top connection for every well, as in
+                // ECLIPSE (injectors used the deepest connection)
+                if (!_hasExplicitZref)
+                    Zref = HighestZref;
+
                 if (WellType == WellType.PRODUCER)
                 {
-                    if (!_hasExplicitZref)
-                        Zref = HighestZref;
                     if (Pwf_n <= 0.0)
                         Pwf_n = HighestZPressure;
                 }
                 else
                 {
-                    if (!_hasExplicitZref)
-                        Zref = LowestZref;
                     if (Pwf_n <= 0.0)
                         Pwf_n = LowestZPressure;
                 }
@@ -361,11 +390,16 @@ namespace ReservoirSimulator
 
         internal bool IsOilTarget =>
             ConstraintType == ConstraintType.ORATE ||
-            (ConstraintType == ConstraintType.RATE && PreferedPhase == Phase.OIL);
+            (ConstraintType == ConstraintType.RATE && CurrentInjectorControl is null && PreferedPhase == Phase.OIL);
 
+        // For an injector the injected phase (WCONINJE item 2) decides, as for water above; it used to be the
+        // WELSPECS preferred phase, so a gas injector whose preferred phase was not GAS injected nothing
         internal bool IsGasTarget =>
             ConstraintType == ConstraintType.GRATE ||
-            (ConstraintType == ConstraintType.RATE && PreferedPhase == Phase.GAS);
+            (ConstraintType == ConstraintType.RATE &&
+            (CurrentInjectorControl is not null
+                 ? string.Equals(CurrentInjectorControl.InjectionPhase, "GAS", StringComparison.OrdinalIgnoreCase)
+                 : PreferedPhase == Phase.GAS));
 
         internal bool IsResTarget =>
             ConstraintType == ConstraintType.RESV;
@@ -385,6 +419,7 @@ namespace ReservoirSimulator
                 {
                     ConstraintType.MAX_BHP => pressure - CurrentInjectorControl.MaxBhpLimit,
                     ConstraintType.RATE => rate - CurrentInjectorControl.TargetRate,
+                    ConstraintType.RESV => rate - CurrentInjectorControl.ResvRateTarget,
                     _ => throw new NotSupportedException($"Unsupported injector control mode: {CurrentInjectorControl.ControlMode}")
                 };
             }
@@ -398,6 +433,7 @@ namespace ReservoirSimulator
                     ConstraintType.WRATE => rate - CurrentProducerControl.WaterRateTarget,
                     ConstraintType.GRATE => rate - CurrentProducerControl.GasRateTarget,
                     ConstraintType.LRATE => rate - CurrentProducerControl.LiquidRateTarget,
+                    ConstraintType.RESV => rate - CurrentProducerControl.ResvRateTarget,
                     _ => throw new NotSupportedException($"Unsupported producer control mode: {CurrentProducerControl.ControlMode}")
                 };
             }

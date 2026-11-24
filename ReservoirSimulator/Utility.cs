@@ -49,6 +49,14 @@ namespace ReservoirSimulator
 
         internal static double Convert(double value, string quantityName, Units fromUnits, Units toUnits)
         {
+            // The units library inverts the pressure factor of a unit with pressure in its denominator: 1/bar came out
+            // as 14.5 /psi instead of 1/14.5 (210 times too large), and cP·rm3/(d·bar) as 91.2 instead of 0.434
+            // cP·rb/(d·psi). These two are worked out from conversions it gets right (checked against hand values).
+            if (quantityName == "Compressibility")
+                return value / Convert(1.0, "Pressure", fromUnits, toUnits);
+            if (quantityName == "Transmissibility")
+                return value * Convert(1.0, "Reservoir Volume Rate", fromUnits, toUnits) / Convert(1.0, "Pressure", fromUnits, toUnits);
+
             if (!UnitsByQuantity.TryGetValue(quantityName, out var unitArray))
                 throw new ArgumentException($"Unknown quantity name: {quantityName}");
             int fromIndex = (int)fromUnits;
@@ -60,6 +68,9 @@ namespace ReservoirSimulator
 
         internal static IEnumerable<double> Convert(IEnumerable<double> values, string quantityName, Units fromUnits, Units toUnits)
         {
+            if (quantityName is "Compressibility" or "Transmissibility")
+                return values.Select(value => Convert(value, quantityName, fromUnits, toUnits)).ToList();
+
             if (!UnitsByQuantity.TryGetValue(quantityName, out var unitArray))
                 throw new ArgumentException($"Unknown quantity name: {quantityName}");
             int fromIndex = (int)fromUnits;
