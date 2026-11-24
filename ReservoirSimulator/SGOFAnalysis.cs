@@ -7,12 +7,13 @@ namespace ReservoirSimulator
     public readonly struct SgofResult(double sgc, double sorg, double swi, double krgEndpoint, double krogEndpoint,
                                           double ng, double nog, double pdgo, double lambdaGo,
                                           double pcRSquared, double krgRSquared, double krogRSquared,
-                                          double sgMin, double sgMax, double pcMin, double pcMax)
+                                          double sgMin, double sgMax, double pcMin, double pcMax, double sgKrgEnd)
     {
         public readonly double Sgc = sgc;                      // Critical Gas Saturation (largest Sg with Krg = 0)
         public readonly double Sorg = sorg;                    // Residual Oil to Gas
         public readonly double Swi = swi;                      // Connate Water background parameter
-        public readonly double KrgEndpoint = krgEndpoint;      // Krg at the last row
+        public readonly double KrgEndpoint = krgEndpoint;      // Largest Krg of the table
+        public readonly double SgKrgEnd = sgKrgEnd;            // First Sg at which Krg reaches that value
         public readonly double KrogEndpoint = krogEndpoint;    // Krog at Sg = 0
 
         public readonly double Ng = ng;                        // Gas Corey Exponent
@@ -36,8 +37,10 @@ namespace ReservoirSimulator
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluateKrg<T>(ADiff<T> sg) where T : struct, IVectorND<T>
         {
-            // Gas flows from Sgc up to the last row's Sg
-            ADiff<T> sgNorm = (sg - Sgc) / (SgMax - Sgc);
+            // Krg rises from Sgc to the first Sg where it reaches its end point, and is flat above that. It used to be
+            // stretched to the table's last Sg: a table that reaches Krg = 1 at Sg = 0.85 and then has a row at Sg = 1
+            // (SPE10 model 1) got a Krg 53 % too low at 0.85, so gas moved too slowly and oil rate was too high.
+            ADiff<T> sgNorm = (sg - Sgc) / (SgKrgEnd - Sgc);
             if (sgNorm.Value <= 0.0) return default;
             if (sgNorm.Value >= 1.0) return new ADiff<T>(KrgEndpoint, default);
             return KrgEndpoint * Pow(sgNorm, Ng);
@@ -93,7 +96,10 @@ namespace ReservoirSimulator
             double sgc = firstMobileGas > 0 ? sorted[firstMobileGas - 1].Sg : sorted.First().Sg;
             double sgLast = sorted.Last().Sg;
             double krogEndpoint = sorted.First().Krog; // Krog at Sg = 0
-            double krgEndpoint = sorted.Last().Krg;    // Krg at the last row
+            // Krg end point: the table's largest Krg, and the first Sg at which it is reached (rows after that repeat it)
+            double krgEndpoint = sorted.Max(r => r.Krg);
+            double sgKrgEnd = sorted.First(r => r.Krg >= krgEndpoint * (1.0 - 1e-9)).Sg;
+            if (sgKrgEnd <= sgc) sgKrgEnd = sgLast;    // Krg is 0 everywhere: keep a valid range
 
             // Residual oil to gas: Krog reaches 0 at Sg = 1 - Swi - Sorg (first such row)
             var activeGasLimit = sorted.FirstOrDefault(r => r.Krog <= 0.0) ?? sorted.Last();
@@ -112,10 +118,10 @@ namespace ReservoirSimulator
                     pcY.Add(Log(row.Pcg));
                 }
 
-                if (row.Sg > sgc && row.Sg < sgLast && row.Krg > 0)
+                if (row.Sg > sgc && row.Sg < sgKrgEnd && row.Krg > 0)
                 {
-                    krgX.Add(Log((row.Sg - sgc) / (sgLast - sgc)));
-                    krgY.Add(Log(row.Krg));
+                    krgX.Add(Log((row.Sg - sgc) / (sgKrgEnd - sgc)));
+                    krgY.Add(Log(row.Krg / krgEndpoint));
                 }
 
                 double so = 1.0 - fixedSwi - row.Sg;
@@ -127,7 +133,8 @@ namespace ReservoirSimulator
             }
 
             var (mPc, bPc, rSqPc) = Utility.LinearRegression(pcX, pcY);
-            var (ng, _, rSqG) = Utility.LinearRegression(krgX, krgY);
+            var (_, _, rSqG) = Utility.LinearRegression(krgX, krgY);
+            double ng = CoreyExponent(krgX, krgY);
             var (nog, _, rSqOg) = Utility.LinearRegression(krogX, krogY);
 
             double lambdaGo = -1.0 / mPc;
@@ -136,7 +143,24 @@ namespace ReservoirSimulator
 
             Result = new(sgc, sorg, fixedSwi, krgEndpoint, krogEndpoint,
                 ng, nog, pdgo, lambdaGo, rSqPc, rSqG, rSqOg,
-                sorted.First().Sg, sgLast, sorted.Min(r => r.Pcg), sorted.Max(r => r.Pcg));
+                sorted.First().Sg, sgLast, sorted.Min(r => r.Pcg), sorted.Max(r => r.Pcg), sgKrgEnd);
+        }
+
+        // Corey exponent n of kr = end point x (normalised saturation)^n, from x = ln(normalised saturation) and
+        // y = ln(kr / end point). The curve is made to pass through its end point, so the line is fitted through the
+        // origin, and each row is weighted by kr squared, which is least squares on kr itself to first order. The plain
+        // log-log regression gave rows such as Krg = 0.000001 (one significant digit) the same say as the rows where
+        // gas flows, and fitted an intercept that was then dropped: SPE10 model 1's Krg came out 40-80 % too high.
+        internal static double CoreyExponent(List<double> x, List<double> y)
+        {
+            double sxy = 0.0, sxx = 0.0;
+            for (int i = 0; i < x.Count; i++)
+            {
+                double w = Exp(2.0 * y[i]);
+                sxy += w * x[i] * y[i];
+                sxx += w * x[i] * x[i];
+            }
+            return sxx > 0.0 ? sxy / sxx : 1.0;
         }
 
     }

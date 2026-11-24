@@ -7,8 +7,10 @@ namespace ReservoirSimulator
     public readonly struct SwofResult(double swi, double sor, double krwEndpoint, double kroEndpoint,
                           double nw, double no, double pd, double lambda,
                           double pcRSquared, double krwRSquared, double kroRSquared, 
-                          double SwMin, double SwMax, double PcMin, double PcMax)
+                          double SwMin, double SwMax, double PcMin, double PcMax, double swKrwEnd)
     {
+        public readonly double SwKrwEnd = swKrwEnd;                // First Sw at which Krw reaches its end point
+
         // Core Endpoints
         public readonly double SwMin = SwMin;                      // Connate Water Saturation
         public readonly double SwMax = SwMax;                      // Maximum Water Saturation
@@ -36,20 +38,21 @@ namespace ReservoirSimulator
         public double KroRSquared { get; } = kroRSquared;
 
         // High-Performance Inlined AutoDiff Math Models
-        // Krw spans the whole table, Swi to the last row's Sw (SwMax), ending at the last row's Krw. Krow (below) spans
-        // Swi to 1 - Sor, where Sor is set by the first row with Krow = 0. Before, both used 1 - Sor with Sor = 1 - SwMax,
-        // so Sor was 0 for any table ending at Sw = 1 and residual oil could still flow.
+        // Krw rises from Swi to the first Sw where it reaches its end point (SwKrwEnd; the last row for most tables) and
+        // is flat above that, like Krg in SGOF. Krow (below) spans Swi to 1 - Sor, where Sor is set by the first row with
+        // Krow = 0. Before, both used 1 - Sor with Sor = 1 - SwMax, so Sor was 0 for any table ending at Sw = 1 and
+        // residual oil could still flow.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluateKrw<T>(ADiff<T> sw) where T : struct, IVectorND<T>
         {
-            double denom = SwMax - Swi;
+            double denom = SwKrwEnd - Swi;
             ADiff<T> swNorm = (sw - Swi) / denom;
 
             if (swNorm.Value <= 0.0)
                 return default; // 0 value and 0 derivative for Sw <= Swi
 
             if (swNorm.Value >= 1.0)
-                return new ADiff<T>(KrwEndpoint, default); // Clamped at the last row's Krw for Sw >= SwMax
+                return new ADiff<T>(KrwEndpoint, default); // Clamped at the end point for Sw >= SwKrwEnd
 
             return KrwEndpoint * Pow(swNorm, Nw);
         }
@@ -130,7 +133,10 @@ namespace ReservoirSimulator
             double pcMin = sorted.Min(r => r.Pc);
             double pcMax = sorted.Max(r => r.Pc);
             double sor = 1.0 - sorRow.Sw;
-            double krwEndpoint = sorted.Last().Krw;
+            // Krw end point: the table's largest Krw, and the first Sw at which it is reached (rows after that repeat it)
+            double krwEndpoint = sorted.Max(r => r.Krw);
+            double swKrwEnd = sorted.First(r => r.Krw >= krwEndpoint * (1.0 - 1e-9)).Sw;
+            if (swKrwEnd <= swi) swKrwEnd = swMax;    // Krw is 0 everywhere: keep a valid range
 
             // 2. Prepare Log Arrays
             List<double> pcX = []; List<double> pcY = [];
@@ -146,10 +152,10 @@ namespace ReservoirSimulator
                     pcY.Add(Log(row.Pc));
                 }
 
-                // Krw over Swi..SwMax, Krow over Swi..1-Sor (each curve over its own range, see EvaluateKrw)
-                if (row.Sw > swi && row.Sw < swMax && row.Krw > 0)
+                // Krw over Swi..SwKrwEnd, Krow over Swi..1-Sor (each curve over its own range, see EvaluateKrw)
+                if (row.Sw > swi && row.Sw < swKrwEnd && row.Krw > 0)
                 {
-                    krwX.Add(Log((row.Sw - swi) / (swMax - swi)));
+                    krwX.Add(Log((row.Sw - swi) / (swKrwEnd - swi)));
                     krwY.Add(Log(row.Krw));
                 }
                 if (row.Sw > swi && row.Sw < 1.0 - sor && row.Krow > 0)
@@ -172,7 +178,7 @@ namespace ReservoirSimulator
 
 
             Result = new(swi, sor, krwEndpoint, kroEndpoint, nw, no, 
-                        pd, lambda, rSqPc, rSqW, rSqO, swMin, swMax, pcMin, pcMax);
+                        pd, lambda, rSqPc, rSqW, rSqO, swMin, swMax, pcMin, pcMax, swKrwEnd);
         }
 
         
