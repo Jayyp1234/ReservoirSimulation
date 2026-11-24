@@ -26,6 +26,8 @@ namespace EclipseDeckReader
         public List<double> MultXArray { get; set; } = [];
         public List<double> MultYArray { get; set; } = [];
         public List<double> MultZArray { get; set; } = [];
+        public List<double> MultpvArray { get; set; } = [];             // MULTPV: pore volume multiplier per cell
+        public double MinPoreVolume { get; set; }                      // MINPV: cells with less pore volume are inactive (0 = off)
         public List<int> ActnumArray { get; set; } = [];
         public List<int> SatnumArray { get; set; } = [];
         public List<int> PvtnumArray { get; set; } = [];

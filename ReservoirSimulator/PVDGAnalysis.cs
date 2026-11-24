@@ -46,7 +46,7 @@ namespace ReservoirSimulator
     {
         public double Pressure { get; set; } = Utility.Convert(pvdg[0], "Pressure", incomingUnit, Units.FIELD);
         public double Bg { get; set; } = Utility.Convert(pvdg[1], "Gas Formation Volume Factor (Bg)", incomingUnit, Units.FIELD);
-        public double Viscosity { get; set; } = Utility.Convert(pvdg[2], "Gas Viscosity", incomingUnit, Units.FIELD);
+        public double Viscosity { get; set; } = Utility.Convert(pvdg[2], "Viscosity", incomingUnit, Units.FIELD);
     }
 
     public class PVDGAnalysis(List<List<double>> _pvdg, Units incomingUnit)

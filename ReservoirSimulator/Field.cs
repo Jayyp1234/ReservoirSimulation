@@ -13,7 +13,7 @@ namespace ReservoirSimulator
         List<Group<T>> groups { get; set; } = new List<Group<T>>();
         internal Field(string _name, List<Group<T>> _groups)
         {
-            name = name;
+            name = _name;
             groups = _groups;
         }
     }

@@ -11,9 +11,11 @@ namespace ReservoirSimulator
         const double alpha = 1.127e-3, beta = 5.615;
         public bool LogResult { get; set; }
         public bool isActive { get { return ActiveIndex >= 0; } }
-        public bool isSaturated { get; set; } = true;
+        public bool GasIsDIssolved { get; set; } = false;
+        public bool OilIsVaporised { get; set; } = false;
         public double NTG { get; set; }
         public double Porosity { get; set; } = 0;
+        public double PoreVolumeMultiplier { get; set; } = 1.0;   // MULTPV
         public Face[] Faces { get; set; } = [.. Enumerable.Range(0, 6).Select(i => new Face() { Direction = (FlowDirection)i })];
         public double PoreVolume { get; private set; } = 0;
         public double InvPoreVolume { get; private set; } = 0;
@@ -49,8 +51,6 @@ namespace ReservoirSimulator
         internal bool BVISG { get; set; } = false;
 
 
-
-
         public List<double> PO = [], PW = [], PG = [], SW = [], SO = [], SG = [], PB = [], PD = [];
 
         internal void MakeFaces()
@@ -66,7 +66,7 @@ namespace ReservoirSimulator
             Faces[4].Corners = [Corners[0], Corners[3], Corners[2], Corners[1]];  // Top (-K)
             Faces[5].Corners = [Corners[4], Corners[5], Corners[6], Corners[7]];  // Bottom (+K)
 
-            PoreVolume = Utility.ComputeHexahedronVolume(this) * NTG * Porosity / beta;
+            PoreVolume = Utility.ComputeHexahedronVolume(this) * NTG * Porosity * PoreVolumeMultiplier / beta;
             InvPoreVolume = 1.0 / PoreVolume;
 
             foreach (var face in Faces)

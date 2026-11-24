@@ -10,27 +10,31 @@ namespace ReservoirSimulator
     public class BlackOilReservoir
     {
         public int funcall;
+        public bool UseUpstreamWeightingForInjection = false;
         public List<double> Time, SweepEff;
         readonly Func<ADiff<Vector6d>, ADiff<Vector6d>> Er;
-        (double maxDP, double maxDS, int i_p, int i_s) CheckSolution(double[] xs)
+        (double maxDP, double maxDSw, double maxDSg, int i_p, int i_w, int i_g) CheckSolution(double[] xs)
         {
-            int i_p = 0, i_s = 0; double dp, maxDp = 0, ds, maxDs = 0;
+            int i_p = 0, i_w = 0, i_g = 0; 
+            double dp, maxDp = 0, ds, maxDSw = 0, maxDSg = 0;
             for (int i = 0; i < Ngrids; i++)
             {
                 dp = Grids[i].Po_np1 - Grids[i].Po_n;
                 if (Abs(dp) > maxDp) { maxDp = Abs(dp); i_p = i; }
                 ds = Grids[i].Sw_np1 - Grids[i].Sw_n;
-                if (Abs(ds) > maxDs) { maxDs = Abs(ds); i_s = i; }
+                if (Abs(ds) > maxDSw) { maxDSw = Abs(ds); i_w = i; }
+                ds = Grids[i].Sg_np1 - Grids[i].Sg_n;
+                if (Abs(ds) > maxDSg) { maxDSg = Abs(ds); i_g = i; }
             }
-            return (maxDp, maxDs, i_p, i_s);
+            return (maxDp, maxDSw, maxDSg, i_p, i_w, i_g);
         }
 
-        readonly int Nx, Ny, Nz, NxNy, Ngrids, NumActiveGrids, Nwells, NumWells;
+        readonly int Nx, Ny, Nz, NxNy, Ngrids, NumActiveGrids, NumWells;
         readonly double[] Kx, Ky, Kz, Φ, Dx, Dy, Dz, zTop;
         double[] Coord, Zcorn;
         readonly double Prefr, cr, γo0, γw0, γg0;
-        Grid<Vector6d>[] Grids;
-        List<Well<Vector6d>> Wells;
+        public Grid<Vector6d>[] Grids;
+        public List<Well<Vector6d>> Wells;
         Aquifer Aquifer;
         Dictionary<(int, int), EQUILPressureDepth> EquilPVTCombinations = [];
         EclipseDataDeck DATA;
@@ -74,10 +78,13 @@ namespace ReservoirSimulator
             Φ = [.. Data.PorosityArray];
             Kx = [.. Data.PermXArray]; Ky = [.. Data.PermYArray]; Kz = [.. Data.PermZArray];
 
+            // NTG and MULTPV default to 1 for every cell (set at DIMENS); a wrong-sized array is ignored rather than misread
+            double[]? ntg = Data.NtgArray.Count == Ngrids ? Data.NtgArray.ToArray() : null;
+            double[]? multpv = Data.MultpvArray.Count == Ngrids ? Data.MultpvArray.ToArray() : null;
             Grids = Zcorn is not null ? Utility.ProcessGrid<Vector6d>(Nx, Ny, Nz, Coord, Zcorn, Φ, Kx, Ky, Kz) :
                 Utility.ProcessGrid<Vector6d>(Nx, Ny, Nz, Dx, Dy, Dz, zTop, Φ, Kx, Ky, Kz);
 
-            // Process PVTW and PVTO tables.
+            // Process PVTW, PVDO, and PVDG tables.
             PVTWs = [.. Data.RawPvtwTables.Select(pvtw => new PVTWAnalysis(pvtw, incomingUnit))];
             PVDOs = [.. Data.RawPvdoTables.Select(pvdo => new PVDOAnalysis(pvdo, incomingUnit))];
             PVDGs = [.. Data.RawPvdgTables.Select(pvdg => new PVDGAnalysis(pvdg, incomingUnit))];
@@ -130,7 +137,6 @@ namespace ReservoirSimulator
                 for (int p = 0; p < PVDOs.Length; p++)
                 {
                     var equil = EQUILs[e]; var pvdo = PVDOs[p]; var pvtw = PVTWs[p]; var pvdg = PVDGs[p];
-
                     Func<double, double> γo = P => γo0 / pvdo.Result.EvaluateBo(P),
                                          γw = P => γw0 / pvtw.Result.EvaluateBw(P),
                                          γg = P => γg0 / pvdg.Result.EvaluateBg(P);
@@ -238,6 +244,9 @@ namespace ReservoirSimulator
 
             // WELLS
             Wells = [.. Data.Wells.Select(well => new Well<Vector6d>(well.Value, Nx, Ny, Nz, Grids, incomingUnit))];
+            foreach (var well in Wells.Where(w => w.PerfNatIndex.Count == 0))
+                Console.WriteLine($"      [Warning] Well '{well.Name}' has no completion in an active cell; it is left out of the simulation.");
+            Wells.RemoveAll(w => w.PerfNatIndex.Count == 0);
             NumWells = Wells.Count;
         }
         public void Initialize()
@@ -268,37 +277,22 @@ namespace ReservoirSimulator
                 double pcog = pgEquil - poEquil; // Pg >= Po
 
                 // 1. Invert Pcow(Sw) for initial water saturation Sw_n
-                double swMin = swoftable.Min(swof => swof.Sw);
-                double swMax = swoftable.Max(swof => swof.Sw);
-                double pcowMin = swoftable.Min(swof => swof.Pc);
-                double pcowMax = swoftable.Max(swof => swof.Pc);
+                double swMin = SWOFs[s].Result.SwMin, swMax = SWOFs[s].Result.SwMax;
+                double pcowMin = SWOFs[s].Result.PcMin, pcowMax = SWOFs[s].Result.PcMax;
 
-                if (z >= equildata.ZWOC || pcow <= pcowMin)
-                {
-                    grid.Sw_n = swMax;
-                }
-                else if (pcow >= pcowMax)
-                {
-                    grid.Sw_n = swMin;
-                }
+                if (z >= equildata.ZWOC || pcow <= pcowMin) grid.Sw_n = swMax;
+                else if (pcow >= pcowMax) grid.Sw_n = swMin;
                 else
-                {
-                    // SWOF is ordered by ascending Sw (descending Pc); reverse to search ascending Pc
-                    var ascPcowTable = swoftable.AsEnumerable().Reverse().ToList();
-                    grid.Sw_n = Utility.Interpolate(ascPcowTable, pcow, swof => swof.Pc, swof => swof.Sw);
-                }
+                    grid.Sw_n = Utility.Interpolate(swoftable, pcow, swof => swof.Pc, swof => swof.Sw);
+                
 
                 // 2. Invert Pcog(Sg) for initial gas saturation Sg_n (only above ZGOC when SGOF is present)
                 if (sgoftable is null || sgoftable.Count == 0 || z >= equildata.ZGOC)
-                {
                     grid.Sg_n = 0.0;
-                }
                 else
-                {
-                    double sgMin = sgoftable.Min(sgof => sgof.Sg);
-                    double sgMax = sgoftable.Max(sgof => sgof.Sg);
-                    double pcogMin = sgoftable.Min(sgof => sgof.Pcg);
-                    double pcogMax = sgoftable.Max(sgof => sgof.Pcg);
+                { 
+                    double sgMin = SGOFs[s].Result.SgMin, sgMax = SGOFs[s].Result.SgMax;
+                    double pcogMin = SGOFs[s].Result.PcMin, pcogMax = SGOFs[s].Result.PcMax;
 
                     if (pcog <= pcogMin)
                         grid.Sg_n = sgMin;
@@ -343,41 +337,43 @@ namespace ReservoirSimulator
                 }
 
                 // 4. Initial pore-volume-scaled accumulation terms at t = 0
-                ADiff<Vector6d> meanP = grid.So_n * grid.Po_n + grid.Sw_n * grid.Pw_n + grid.Sg_n * grid.Pg_n;
-                ADiff<Vector6d> Er_i = grid.Er(meanP);
-                ADiff<Vector6d> Bo_i = grid.Bo(grid.Po_n);
-                ADiff<Vector6d> Bw_i = grid.Bw(grid.Pw_n);
-                ADiff<Vector6d> Bg_i = grid.Bg(grid.Pg_n);
+                var meanP = grid.So_n * grid.Po_n + grid.Sw_n * grid.Pw_n + grid.Sg_n * grid.Pg_n;
+                var Er_i = grid.Er(meanP);
+                var Bo_i = grid.Bo(grid.Po_n);
+                var Bw_i = grid.Bw(grid.Pw_n);
+                var Bg_i = grid.Bg(grid.Pg_n);
 
                 grid.ErSo_Bo_n = (Er_i * grid.So_n / Bo_i).Value;
                 grid.ErSw_Bw_n = (Er_i * grid.Sw_n / Bw_i).Value;
                 grid.ErSg_Bg_n = (Er_i * grid.Sg_n / Bg_i).Value;
-
                 grid.SaveResult(po: grid.Po_n, pw: grid.Pw_n, pg: grid.Pg_n,
                                 so: grid.So_n, sw: grid.Sw_n, sg: grid.Sg_n);
             }
 
             foreach (var well in Wells)
+            {
+                well.Pwf_n = well.PerfNatIndex.Select(m => Grids[m].Po_n).Average();
                 well.SaveResult(pwf: well.Pwf_n, qo: well.Qo_n, qw: well.Qw_n, qg: well.Qg_n);
+            }
         }
         void InitialGuess(double[] xs, double dt, bool isRetry = false, bool wellEventOccurred = false)
         {
-            int indx = 0;
-            int n = Time.Count - 1;
+            int indx = 0, n = Time.Count - 1;
             bool canExtrapolate = n >= 2 && !isRetry && !wellEventOccurred;
             double omega = canExtrapolate ? Min(1.0, dt / (Time[n] - Time[n - 1])) : 0.0;
 
-            // 1. Reservoir Grid Unknowns (Po, Sw)
+            // 1. Reservoir Grid Unknowns (Po, Sw, Sg)
             foreach (var mgrid in Grids)
             {
                 if (!mgrid.isActive) continue;
 
                 double poGuess = mgrid.Po_n;
-                //if (canExtrapolate)
-                //    poGuess += omega * (mgrid.Po_n - mgrid.PO[n - 1]);
+                if (canExtrapolate)
+                    poGuess += omega * (mgrid.Po_n - mgrid.PO[n - 1]);
 
                 xs[indx++] = Max(14.7, poGuess); // Po index
                 xs[indx++] = mgrid.Sw_n;         // Sw index
+                xs[indx++] = mgrid.Sg_n;         // Sg index
             }
 
             // 2. Well Unknowns (Pwf, Q) for all wells
@@ -440,8 +436,8 @@ namespace ReservoirSimulator
             // 1. Grid cell updates
             for (int i = 0; i < numActiveGrids; i++)
             {
-                int idx_p = 2 * i + 0, idx_s = 2 * i + 1;
-                double dPo = dx[idx_p], dSw = dx[idx_s];
+                int idx_p = 3 * i + 0, idx_w = 3 * i + 1, idx_g = 3 * i + 2;
+                double dPo = dx[idx_p], dSw = dx[idx_w], dSg = dx[idx_g];
 
                 // Damping / step-size limiting on pressure
                 if (Abs(dPo) > dPmax) dPo = Sign(dPo) * dPmax;
@@ -449,26 +445,34 @@ namespace ReservoirSimulator
                 // Damping / step-size limiting on saturation
                 if (Abs(dSw) > dSmax) dSw = Sign(dSw) * dSmax;
 
+                // Damping / step-size limiting on saturation
+                if (Abs(dSg) > dSmax) dSg = Sign(dSg) * dSmax;
+
                 // Apply update: x = x - dx
                 double p_new = x[idx_p] - dPo;
-                double s_new = x[idx_s] - dSw;
+                double w_new = x[idx_w] - dSw;
+                double g_new = x[idx_g] - dSg;
 
                 // Physical bounds enforcement in Field units [psia] and [0, 1]
                 p_new = Max(14.7, p_new);
-                s_new = Clamp(s_new, 0.0, 1.0);
+                w_new = Clamp(w_new, 0.0, 1.0);
+                g_new = Clamp(g_new, 0.0, 1.0);
 
                 // Track actual applied changes (after damping & clamping)
                 double actualPd = Abs(p_new - x[idx_p]);
-                double actualSd = Abs(s_new - x[idx_s]);
+                double actualSd = Abs(w_new - x[idx_w]);
+                double actualGd = Abs(g_new - x[idx_g]);
                 if (actualPd > maxPd) maxPd = actualPd;
                 if (actualSd > maxSd) maxSd = actualSd;
+                if (actualGd > maxSd) maxSd = actualGd;
 
                 x[idx_p] = p_new;
-                x[idx_s] = s_new;
+                x[idx_w] = w_new;
+                x[idx_g] = g_new;
             }
 
             // 2. Well variables update (starts right after active grid DOFs)
-            int wellStart = 2 * numActiveGrids;
+            int wellStart = 3 * numActiveGrids;
             for (int w = 0; w < numWells; w++)
             {
                 int idxP = wellStart + 2 * w + 0; // Well pressure [psia]
@@ -481,24 +485,9 @@ namespace ReservoirSimulator
             return (maxPd, maxSd);
         }
 
-        public static double[] GetCumulativeTimeArray(IReadOnlyList<double> timeSteps, bool includeZero = false)
-        {
-            int offset = includeZero ? 1 : 0;
-            double[] cumulative = new double[timeSteps.Count + offset];
-
-            double runningTotal = 0.0;
-            for (int i = 0; i < timeSteps.Count; i++)
-            {
-                runningTotal += timeSteps[i];
-                cumulative[i + offset] = runningTotal;
-            }
-
-            return cumulative;
-        }
-
         public void Simulate(double[] ResultTime = null)
         {
-            if (ResultTime == null) ResultTime = GetCumulativeTimeArray(DATA.TimeSteps, includeZero: true);
+            if (ResultTime == null) ResultTime = Utility.GetCumulativeTimeArray(DATA.TimeSteps, includeZero: true);
             int cores = Environment.ProcessorCount, chunkSize = Ngrids / cores;
 
             (int totalDofs, int[] col_index, int[] row_ptr, double[] JacValues) = ReservoirJacobian.Create(3, Grids, Wells);
@@ -693,6 +682,7 @@ namespace ReservoirSimulator
                 for (int wellidx = 0; wellidx < NumWells; wellidx++)
                 {
                     var well = Wells[wellidx];
+                    well.Qo_np1 = 0.0; well.Qw_np1 = 0.0; well.Ql_np1 = 0.0; well.Qg_np1 = 0.0;
                     var wOff = well.Offset;
                     if (!well.isActive)
                     {
@@ -708,9 +698,6 @@ namespace ReservoirSimulator
                     var pwell = new ADiff<Vector6d>(xnp1[rowflow], new(1, 0, 0, 0, 0, 0));
                     var qwell = new ADiff<Vector6d>(xnp1[rowconst], new(0, 1, 0, 0, 0, 0));
                     var FlowRes = qwell * dt;
-                    well.Qo = default;
-                    well.Qw = default;
-                    well.Qg = default;
 
                     int perfCount = well.PerfNatIndex.Count;
                     bool isWaterTarget = well.IsWaterTarget;
@@ -771,9 +758,9 @@ namespace ReservoirSimulator
                                     var WIw = mgrid.WI * (Krw_m / (μw_m * Bw_m));
                                     var WIg = mgrid.WI * (Krg_m / (μg_m * Bg_m));
 
-                                    var rate_oil = WIo * DΦo;
-                                    var rate_water = WIw * DΦw;
-                                    var rate_gas = WIg * DΦg;
+                                    var rate_oil = WIo * DΦo; well.Qo += rate_oil; 
+                                    var rate_water = WIw * DΦw; well.Qw += rate_water; 
+                                    var rate_gas = WIg * DΦg; well.Qg += rate_gas;
 
                                     // Reservoir residuals & Jacobian entries (outflow is +rate * dt)
                                     Res[row_o] += rate_oil.Value * dt;
@@ -806,7 +793,7 @@ namespace ReservoirSimulator
                                     JacValues[wOff.RowFlow_dGrid[p][1]] -= perfRate.Derivative[4] * dt;
                                     JacValues[wOff.RowFlow_dGrid[p][2]] -= perfRate.Derivative[5] * dt;
 
-                                    well.Qo += rate_oil; well.Qw += rate_water; well.Qg += rate_gas;
+                                    
                                 }
 
                                 // Close Row Q using matching accumulated well rate
@@ -839,19 +826,30 @@ namespace ReservoirSimulator
                                     var Pw_m = Po_m - mgrid.Pcow(Sw_m);
                                     var Pg_m = Po_m + mgrid.Pcog(Sg_m);
                                     var So_m = 1.0 - Sw_m - Sg_m;
+                                    var Bo_m = mgrid.Bo(Po_m);
+                                    var Bw_m = mgrid.Bw(Pw_m);
+                                    var Bg_m = mgrid.Bg(Pg_m);
+                                    var Kro_m = mgrid.Krow(Sw_m);
+                                    var Krw_m = mgrid.Krw(Sw_m);
+                                    var Krg_m = mgrid.Krg(Sg_m);
+                                    var μo_m = mgrid.μo(Po_m);
+                                    var μw_m = mgrid.μw(Pw_m);
+                                    var μg_m = mgrid.μg(Pg_m);
+                                    var γo_m = mgrid.γo(Po_m);
+                                    var γg_m = mgrid.γg(Pg_m);
+                                    var γw_m = mgrid.γw(Pw_m);
 
+                                    var lambdaTotal = (Krw_m / μw_m + Kro_m / μo_m + Krg_m / μg_m) / Bw_m;
                                     if (isWaterTarget)
                                     {
-                                        var Bw_m = mgrid.Bw(Pw_m);
-                                        var μw_m = mgrid.μw(Pw_m);
                                         var γw_well = mgrid.γw(pwell);
-                                        var γw_m = mgrid.γw(Pw_m);
                                         var γw_avg = 0.5 * (γw_m + γw_well);
                                         var DΦw = Pw_m - pwell - γw_avg * dz;
-                                        var WIw = mgrid.WI * (mgrid.Krw(1) / (μw_m * Bw_m));
-                                        var rate_water = WIw * DΦw;
+                                        if (UseUpstreamWeightingForInjection)
+                                            lambdaTotal = mgrid.Krw(1) / (μw_m * Bw_m);
+                                        var WIw = mgrid.WI * lambdaTotal;
+                                        var rate_water = WIw * DΦw; well.Qw += rate_water;
                                         Res[row_w] += rate_water.Value * dt;
-
 
                                         // Reservoir water equation (injection is inflow: rate * dt)
                                         JacValues[wOff.Rm_dPwell[p][1]] += rate_water.Derivative[0] * dt;
@@ -861,22 +859,25 @@ namespace ReservoirSimulator
                                         JacValues[cOff.Diag[4]] += rate_water.Derivative[4] * dt;
                                         JacValues[cOff.Diag[5]] += rate_water.Derivative[5] * dt;
 
-                                        JacValues[wOff.RowFlow_dGrid[p][0]] -= rate_water.Derivative[3] * dt;
-                                        JacValues[wOff.RowFlow_dGrid[p][1]] -= rate_water.Derivative[4] * dt;
-                                        JacValues[wOff.RowFlow_dGrid[p][2]] -= rate_water.Derivative[5] * dt;
 
-                                        well.Qw += rate_water;
+                                        // Per-perforation grid derivatives for Row Q
+                                        var perfRate = isResTarget ? rate_water : rate_water * Bw_m;
+
+                                        FlowRes -= perfRate * dt;
+                                        JacValues[wOff.RowFlow_dGrid[p][0]] -= perfRate.Derivative[3] * dt;
+                                        JacValues[wOff.RowFlow_dGrid[p][1]] -= perfRate.Derivative[4] * dt;
+                                        JacValues[wOff.RowFlow_dGrid[p][2]] -= perfRate.Derivative[5] * dt;
+                                        
                                     }
                                     if (isGasTarget)
                                     {
-                                        var Bg_m = mgrid.Bg(Pg_m);
-                                        var μg_m = mgrid.μg(Pg_m);
-                                        var γg_well = mgrid.γw(pwell);
-                                        var γg_m = mgrid.γw(Pw_m);
+                                        var γg_well = mgrid.γg(pwell);
                                         var γg_avg = 0.5 * (γg_m + γg_well);
-                                        var DΦg = Pw_m - pwell - γg_avg * dz;
-                                        var WIg = mgrid.WI * (mgrid.Krg(1) / (μg_m * Bg_m));
-                                        var rate_gas = WIg * DΦg;
+                                        var DΦg = Pg_m - pwell - γg_avg * dz;
+                                        if (UseUpstreamWeightingForInjection)
+                                            lambdaTotal = mgrid.Krg(1) / (μg_m * Bg_m);
+                                        var WIg = mgrid.WI * lambdaTotal;
+                                        var rate_gas = WIg * DΦg; well.Qg += rate_gas;
                                         Res[row_g] += rate_gas.Value * dt;
 
                                         JacValues[wOff.Rm_dPwell[p][2]] += rate_gas.Derivative[0] * dt;
@@ -886,17 +887,15 @@ namespace ReservoirSimulator
                                         JacValues[cOff.Diag[7]] += rate_gas.Derivative[4] * dt;
                                         JacValues[cOff.Diag[8]] += rate_gas.Derivative[5] * dt;
 
-                                        JacValues[wOff.RowFlow_dGrid[p][0]] -= rate_gas.Derivative[3] * dt;
-                                        JacValues[wOff.RowFlow_dGrid[p][1]] -= rate_gas.Derivative[4] * dt;
-                                        JacValues[wOff.RowFlow_dGrid[p][2]] -= rate_gas.Derivative[5] * dt;
+                                        var perfRate = isResTarget ? rate_gas : rate_gas * Bg_m;
 
-
-                                        well.Qg += rate_gas;
+                                        FlowRes -= perfRate * dt;
+                                        JacValues[wOff.RowFlow_dGrid[p][0]] -= perfRate.Derivative[3] * dt;
+                                        JacValues[wOff.RowFlow_dGrid[p][1]] -= perfRate.Derivative[4] * dt;
+                                        JacValues[wOff.RowFlow_dGrid[p][2]] -= perfRate.Derivative[5] * dt;
+                                        
                                     }
                                 }
-
-                                // Close Row Q using well.Qw
-                                var FlowRes = (qwell - well.Qw) * dt;
                                 Res[rowflow] += FlowRes.Value;
                                 JacValues[wOff.RowFlow_dPwell] += FlowRes.Derivative[0];
                                 JacValues[wOff.RowFlow_dQwell] += FlowRes.Derivative[1];
@@ -930,9 +929,9 @@ namespace ReservoirSimulator
                     if (!grid.isActive) continue;
 
                     int i = grid.ActiveIndex;
-                    double cnvOil = Abs(Res[2 * i + 0]) * grid.Bo_np1 * grid.InvPoreVolume;
-                    double cnvWater = Abs(Res[2 * i + 1]) * grid.Bw_np1 * grid.InvPoreVolume;
-                    double cnvGas = Abs(Res[2 * i + 2]) * grid.Bg_np1 * grid.InvPoreVolume;
+                    double cnvOil = Abs(Res[3 * i + 0]) * grid.Bo_np1 * grid.InvPoreVolume;
+                    double cnvWater = Abs(Res[3 * i + 1]) * grid.Bw_np1 * grid.InvPoreVolume;
+                    double cnvGas = Abs(Res[3 * i + 2]) * grid.Bg_np1 * grid.InvPoreVolume;
 
                     if (cnvOil > MaxCNV) MaxCNV = cnvOil;
                     if (cnvWater > MaxCNV) MaxCNV = cnvWater;
@@ -1093,12 +1092,12 @@ namespace ReservoirSimulator
                     }
 
                     // Validate maximum per-step state changes
-                    var (maxDP, maxDS, i_p, i_s) = CheckSolution(xs);
-                    if (maxDP > 500 || maxDS > 0.2)
+                    var (maxDP, maxDw, maxDg, i_p, i_w, i_g) = CheckSolution(xs);
+                    if (maxDP > 500 || maxDw > 0.2 || maxDg > 0.2)
                     {
-                        int j = maxDP > 500 ? i_p : i_s;
+                        int j = maxDP > 500 ? i_p : maxDw > 0.2 ? i_w : i_g;
                         double limit = maxDP > 500 ? 500 : 0.2;
-                        double change = maxDP > 500 ? maxDP : maxDS;
+                        double change = maxDP > 500 ? maxDP : maxDw > 0.2 ? maxDw : maxDg;
                         Console.ForegroundColor = ConsoleColor.Yellow;
                         Console.WriteLine($"\n[Warning] Time Step Rejected: State Change Limit Exceeded.");
                         Console.ResetColor();
@@ -1215,7 +1214,7 @@ namespace ReservoirSimulator
             //VTUExporter.WriteVtuBinaryOilWater(outputDir, "OilWater.vtu", Grids);
             ExportWellVTK.ExportWells(outputDir, Grids, Wells);
 
-            var animatorExporter = new SimulationAnimatorExporter<Vector4d>(outputDir, Grids);
+            var animatorExporter = new SimulationAnimatorExporter<Vector6d>(outputDir, Grids);
             for (int n = 0; n < Time.Count; n++)
                 animatorExporter.WriteTimeStep(Time, Grids, n);
 

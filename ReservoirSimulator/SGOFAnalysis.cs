@@ -6,7 +6,8 @@ namespace ReservoirSimulator
 {
     public readonly struct SgofResult(double sgc, double sorg, double swi, double krgEndpoint, double krogEndpoint,
                                           double ng, double nog, double pdgo, double lambdaGo,
-                                          double pcRSquared, double krgRSquared, double krogRSquared)
+                                          double pcRSquared, double krgRSquared, double krogRSquared, 
+                                          double sgMin, double sgMax, double pcMin, double pcMax)
     {
         public readonly double Sgc = sgc;                      // Critical Gas Saturation
         public readonly double Sorg = sorg;                    // Residual Oil to Gas
@@ -23,6 +24,12 @@ namespace ReservoirSimulator
         public double PcRSquared { get; } = pcRSquared;
         public double KrgRSquared { get; } = krgRSquared;
         public double KrogRSquared { get; } = krogRSquared;
+
+        public double SgMin { get; } = sgMin;
+        public double SgMax { get; } = sgMax;
+        public double PcMin { get; } = pcMin;
+        public double PcMax { get; } = pcMax;
+
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluateKrg<T>(ADiff<T> sg) where T : struct, IVectorND<T>
@@ -114,7 +121,9 @@ namespace ReservoirSimulator
             double lambdaGo = -1.0 / mPc;
             double pdgo = Exp(bPc);
 
-            Result = new(sgc, sorg, fixedSwi, krgEndpoint, krogEndpoint, ng, nog, pdgo, lambdaGo, rSqPc, rSqG, rSqOg);
+            Result = new(sgc, sorg, fixedSwi, krgEndpoint, krogEndpoint, 
+                ng, nog, pdgo, lambdaGo, rSqPc, rSqG, rSqOg,
+                sgofTable.First().Sg, sgofTable.Last().Sg, sgofTable.First().Pcg, sgofTable.Last().Pcg);
         }
 
     }

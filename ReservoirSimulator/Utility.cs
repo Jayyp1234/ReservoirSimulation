@@ -1,4 +1,5 @@
-﻿using SepalSolver;
+﻿using EclipseDeckReader;
+using SepalSolver;
 using System.Runtime.CompilerServices;
 using static ReservoirSimulator.Math;
 using UnitSystem.Parsing;
@@ -32,6 +33,7 @@ namespace ReservoirSimulator
             ["Liquid Surface Rate"] = ["STB/day", "sm^3/day", "sm^3/day", "scc/hr"],
             ["Gas Surface Rate"] = ["Mscf/day", "sm^3/day", "sm^3/day", "scc/hr"],
             ["Reservoir Volume Rate"] = ["rb/day", "rm^3/day", "rm^3/day", "rcc/hr"],
+            ["Reservoir Volume"] = ["rb", "rm^3", "rm^3", "rcc"],
             ["Cumulative Liquid Volume"] = ["STB", "sm^3", "sm^3", "scc"],
             ["Cumulative Gas Volume"] = ["Mscf", "sm^3", "sm^3", "scc"],
             ["Oil Formation Volume Factor (Bo)"] = ["rb/STB", "rm^3/sm^3", "rm^3/sm^3", "rcc/scc"],
@@ -450,7 +452,7 @@ namespace ReservoirSimulator
         }
 
         internal static Grid<T>[] ProcessGrid<T>(int nx, int ny, int nz, double[] coord, double[] zcorn,
-            double[] Φ, double[] permx, double[] permy, double[] permz) where T : struct, IVectorND<T>
+            double[] Φ, double[] permx, double[] permy, double[] permz, double[]? ntg = null, double[]? multpv = null) where T : struct, IVectorND<T>
         {
             int nxny = nx * ny, ngrids = nxny * nz, nx2 = nx * 2, ny2 = ny * 2;
             Grid<T>[] Grids = new Grid<T>[ngrids];
@@ -460,7 +462,8 @@ namespace ReservoirSimulator
                 Grids[m] = new Grid<T>
                 {
                     IJKIndex = (i, j, k),
-                    NTG = 1.0,
+                    NTG = ntg?[m] ?? 1.0,
+                    PoreVolumeMultiplier = multpv?[m] ?? 1.0,
                     Porosity = Φ[m],
                     Corners = new Vector3d[8]
                 };
@@ -517,7 +520,7 @@ namespace ReservoirSimulator
             return Grids;
         }
         public static Grid<T>[] ProcessGrid<T>(int nx, int ny, int nz, double[] dx, double[] dy, double[] dz,
-            double[] zTop, double[] Φ, double[] permx, double[] permy, double[] permz) where T : struct, IVectorND<T>
+            double[] zTop, double[] Φ, double[] permx, double[] permy, double[] permz, double[]? ntg = null, double[]? multpv = null) where T : struct, IVectorND<T>
         {
             int nxny = nx * ny, ngrids = nxny * nz;
             Grid<T>[] Grids = new Grid<T>[ngrids];
@@ -534,15 +537,17 @@ namespace ReservoirSimulator
                         Grids[m] = new Grid<T>
                         {
                             IJKIndex = (i, j, k),
-                            NTG = 1.0,
+                            NTG = ntg?[m] ?? 1.0,
+                            PoreVolumeMultiplier = multpv?[m] ?? 1.0,
                             Porosity = Φ[m],
                             Corners = new Vector3d[8]
                         };
-                        Grids[m].Faces[0].Permeability = permz[m];
-                        Grids[m].Faces[1].Permeability = permy[m];
-                        Grids[m].Faces[2].Permeability = permx[m];
-                        Grids[m].Faces[3].Permeability = permx[m];
-                        Grids[m].Faces[4].Permeability = permy[m];
+                        // Same face order as the corner-point builder: 0,1 = -I,+I; 2,3 = -J,+J; 4,5 = -K,+K
+                        Grids[m].Faces[0].Permeability = permx[m];
+                        Grids[m].Faces[1].Permeability = permx[m];
+                        Grids[m].Faces[2].Permeability = permy[m];
+                        Grids[m].Faces[3].Permeability = permy[m];
+                        Grids[m].Faces[4].Permeability = permz[m];
                         Grids[m].Faces[5].Permeability = permz[m];
                         double zlo = zTop[j * nx + i] + K.Select(k => dz[i + j * nx + k * nxny]).Sum();
                         double zhi = zlo - dz[m];
@@ -657,8 +662,7 @@ namespace ReservoirSimulator
                                 if (!c1.isActive || !c2.isActive) continue;
 
                                 double area = 0.5 * (c1.Faces[1].Area + c2.Faces[0].Area);
-                                double ntgFactor = 0.5 * (c1.NTG + c2.NTG);
-                                RegisterGridConnection(c1.Faces[1], c2.Faces[0], area * ntgFactor);
+                                RegisterGridConnection(c1.Faces[1], c2.Faces[0], area, c1.NTG, c2.NTG);
                             }
                         }
                     }
@@ -682,8 +686,7 @@ namespace ReservoirSimulator
                                 if (!c1.isActive || !c2.isActive) continue;
 
                                 double area = 0.5 * (c1.Faces[3].Area + c2.Faces[2].Area);
-                                double ntgFactor = 0.5 * (c1.NTG + c2.NTG);
-                                RegisterGridConnection(c1.Faces[3], c2.Faces[2], area * ntgFactor);
+                                RegisterGridConnection(c1.Faces[3], c2.Faces[2], area, c1.NTG, c2.NTG);
                             }
                         }
                     }
@@ -716,7 +719,6 @@ namespace ReservoirSimulator
                 }
             }
         }
-
 
         static bool IsPillarFaulted<T>(
             Grid<T>[] Grids, int nx, int ny, int nz,
@@ -787,20 +789,21 @@ namespace ReservoirSimulator
                     double sharedArea = CalculateFaultIntersectionArea(fA, fB);
                     if (sharedArea > 1e-6)
                     {
-                        double areaEff = applyNTG ? sharedArea * 0.5 * (cA.NTG + cB.NTG) : sharedArea;
-                        RegisterGridConnection(fA, fB, areaEff);
+                        RegisterGridConnection(fA, fB, sharedArea, applyNTG ? cA.NTG : 1.0, applyNTG ? cB.NTG : 1.0);
                     }
                 }
             }
         }
 
-        static void RegisterGridConnection(Face f1, Face f2, double effectiveArea)
+        // NTG scales each cell's permeability before the harmonic average, as in ECLIPSE (X and Y connections only;
+        // vertical connections pass 1). Averaging the two NTGs instead overstates flow when they differ.
+        static void RegisterGridConnection(Face f1, Face f2, double effectiveArea, double ntg1 = 1.0, double ntg2 = 1.0)
         {
             if (effectiveArea <= 0.0 || f1.PerpendicularDistance2Center <= 0.0 || f2.PerpendicularDistance2Center <= 0.0)
                 return;
 
-            double x1 = f1.Permeability / f1.PerpendicularDistance2Center;
-            double x2 = f2.Permeability / f2.PerpendicularDistance2Center;
+            double x1 = f1.Permeability * ntg1 / f1.PerpendicularDistance2Center;
+            double x2 = f2.Permeability * ntg2 / f2.PerpendicularDistance2Center;
 
             double denom = x1 + x2;
             double T = (denom > 0.0) ? (alpha * effectiveArea * (x1 * x2) / denom) : 0.0;
@@ -823,6 +826,111 @@ namespace ReservoirSimulator
                 f.GridIndices.Add(neighborGlobalIdx);
                 f.Transmissibility.Add(trans);
             }
+        }
+
+        // ---------------------------------------------------------------------------------------------
+        // Transmissibility multipliers: MULTX/MULTY/MULTZ, MULTFLT (on the FAULTS faces) and MULTREGT.
+        // They all multiply, as in ECLIPSE. Face index: 0 -I, 1 +I, 2 -J, 3 +J, 4 -K, 5 +K.
+        // ---------------------------------------------------------------------------------------------
+        internal static void ApplyTransmissibilityMultipliers<T>(Grid<T>[] Grids, int nx, int ny, int nz, EclipseDataDeck deck)
+            where T : struct, IVectorND<T>
+        {
+            int Idx(int i, int j, int k) => i + nx * (j + ny * k);
+            int total = nx * ny * nz;
+
+            // 1. MULTX, MULTY, MULTZ: the value on cell (i,j,k) multiplies its connections across its +I, +J, +K face
+            List<double>[] mult = [deck.MultXArray, deck.MultYArray, deck.MultZArray];
+            for (int d = 0; d < 3; d++)
+            {
+                if (mult[d].Count != total) continue;
+                for (int m = 0; m < total; m++)
+                    if (mult[d][m] != 1.0) ScaleFace(Grids, m, 2 * d + 1, mult[d][m]);
+            }
+
+            // 2. MULTFLT: every cell face listed under the fault in FAULTS
+            foreach (var (name, fault) in deck.Faults)
+            {
+                if (fault.TransmissibilityMultiplier == 1.0) continue;
+                foreach (var s in fault.Segments)
+                {
+                    int f = FaultFaceIndex(s.Face);
+                    if (f < 0) { Console.WriteLine($"      [Warning] FAULTS '{name}': face '{s.Face}' not recognised; record skipped."); continue; }
+                    for (int k = s.KStart; k <= s.KEnd; k++)
+                        for (int j = s.JStart; j <= s.JEnd; j++)
+                            for (int i = s.IStart; i <= s.IEnd; i++)
+                                if (i >= 1 && i <= nx && j >= 1 && j <= ny && k >= 1 && k <= nz)
+                                    ScaleFace(Grids, Idx(i - 1, j - 1, k - 1), f, fault.TransmissibilityMultiplier);
+                }
+            }
+
+            // 3. MULTREGT: connections between two different regions. Each connection is visited once, from the
+            //    + face (1, 3, 5) of the cell it was registered on.
+            if (deck.MultregtRecords.Count == 0) return;
+            for (int m = 0; m < total; m++)
+            {
+                var g = Grids[m];
+                if (!g.isActive) continue;
+                for (int f = 1; f < 6; f += 2)
+                {
+                    var face = g.Faces[f];
+                    for (int c = 0; c < face.GridIndices.Count; c++)
+                    {
+                        int n = face.GridIndices[c];
+                        var (i1, j1, k1) = g.IJKIndex; var (i2, j2, k2) = Grids[n].IJKIndex;
+                        bool neighbour = Abs(i1 - i2) + Abs(j1 - j2) + Abs(k1 - k2) == 1;   // otherwise a non-neighbour connection
+                        double factor = MultregtFactor(deck, m, n, "XYZ"[f / 2], neighbour);
+                        if (factor != 1.0) ScaleConnection(Grids, m, f, c, factor);
+                    }
+                }
+            }
+        }
+
+        // The last MULTREGT record that matches the two regions (either way round), the direction and the connection
+        // type is the one that applies. Regions come from MULTNUM, or FLUXNUM when the record's flag is F.
+        static double MultregtFactor(EclipseDataDeck deck, int a, int b, char direction, bool neighbour)
+        {
+            for (int r = deck.MultregtRecords.Count - 1; r >= 0; r--)
+            {
+                var rec = deck.MultregtRecords[r];
+                var region = rec.RegionFlag.StartsWith('F') ? deck.FluxnumArray : deck.MultnumArray;
+                int ra = a < region.Count ? region[a] : 1, rb = b < region.Count ? region[b] : 1;
+                if (ra == rb) continue;   // MULTREGT acts only between different regions
+
+                bool Is(int wanted, int actual) => wanted <= 0 || wanted == actual;   // a defaulted region matches any
+                bool regions = Is(rec.FromRegion, ra) && Is(rec.ToRegion, rb) || Is(rec.FromRegion, rb) && Is(rec.ToRegion, ra);
+                if (!regions || !rec.Direction.Contains(direction)) continue;
+                if (rec.ConnectionType == "NNC" && neighbour || rec.ConnectionType == "NONNNC" && !neighbour) continue;
+                return rec.Multiplier;
+            }
+            return 1.0;
+        }
+
+        // FAULTS face: X (or I) is the face towards I+1, X- towards I-1; likewise Y/J and Z/K
+        static int FaultFaceIndex(string face) => face switch
+        {
+            "X" or "I" => 1, "X-" or "I-" => 0,
+            "Y" or "J" => 3, "Y-" or "J-" => 2,
+            "Z" or "K" => 5, "Z-" or "K-" => 4,
+            _ => -1
+        };
+
+        static void ScaleFace<T>(Grid<T>[] Grids, int m, int f, double factor) where T : struct, IVectorND<T>
+        {
+            for (int c = 0; c < Grids[m].Faces[f].GridIndices.Count; c++)
+                ScaleConnection(Grids, m, f, c, factor);
+        }
+
+        // A connection is stored on both of its cells (face f of cell m, and the opposite face f ^ 1 of the neighbour).
+        // Both copies are scaled so the flow from m to n stays equal and opposite to the flow from n to m.
+        static void ScaleConnection<T>(Grid<T>[] Grids, int m, int f, int c, double factor) where T : struct, IVectorND<T>
+        {
+            var face = Grids[m].Faces[f];
+            int n = face.GridIndices[c];
+            face.Transmissibility[c] *= factor;
+
+            var back = Grids[n].Faces[f ^ 1];
+            int b = back.GridIndices.IndexOf(m);
+            if (b >= 0) back.Transmissibility[b] *= factor;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -869,5 +977,19 @@ namespace ReservoirSimulator
             }
         }
 
+        internal static double[] GetCumulativeTimeArray(IReadOnlyList<double> timeSteps, bool includeZero = false)
+        {
+            int offset = includeZero ? 1 : 0;
+            double[] cumulative = new double[timeSteps.Count + offset];
+
+            double runningTotal = 0.0;
+            for (int i = 0; i < timeSteps.Count; i++)
+            {
+                runningTotal += timeSteps[i];
+                cumulative[i + offset] = runningTotal;
+            }
+
+            return cumulative;
+        }
     }
 }
