@@ -409,6 +409,22 @@ namespace EclipseDeckReader
             (index == 0 || tokens[index - 1].Type == TokenType.NewLine) &&
             (index + 1 >= tokens.Count || tokens[index + 1].Type == TokenType.NewLine);
 
+        // True when the token starts the next keyword: the tokenizer marks every short upper-case word as a keyword,
+        // so unquoted well names and items inside a record (GI01, OP01, OPEN, GAS, BHP) look like keywords too. A real
+        // keyword has nothing after it on its line but a comment; a record item always has other items or its '/'.
+        // Checking only the token type made WELSPECS, COMPDAT and WCONPROD/WCONINJE stop at the first unquoted name or
+        // word, so decks that do not quote them (SPE10, most field decks) lost their wells without a warning.
+        private static bool IsKeywordLine(List<Token> tokens, int index)
+        {
+            if (index >= tokens.Count || tokens[index].Type != TokenType.Keyword) return false;
+            for (int j = index + 1; j < tokens.Count && tokens[j].Type != TokenType.NewLine; j++)
+            {
+                if (tokens[j].Content.Span.StartsWith("--")) break;              // the rest of the line is a comment
+                if (!string.IsNullOrWhiteSpace(tokens[j].Content.ToString())) return false;
+            }
+            return true;
+        }
+
         private static void SkipUnhandledKeywordPayload(List<Token> tokens, ref int index)
         {
             while (index < tokens.Count)
@@ -709,7 +725,7 @@ namespace EclipseDeckReader
                     index++;
                     break;
                 }
-                if (tokens[index].Type == TokenType.Keyword) break;
+                if (IsKeywordLine(tokens, index)) break;
 
                 List<string> record = ReadRecordTokensUntilSlash(tokens, ref index);
                 if (record.Count < 4) continue;
@@ -778,7 +794,7 @@ namespace EclipseDeckReader
                     index++;
                     break;
                 }
-                if (tokens[index].Type == TokenType.Keyword) break;
+                if (IsKeywordLine(tokens, index)) break;
 
                 List<string> record = ReadRecordTokensUntilSlash(tokens, ref index);
                 if (record.Count < 5) continue;
@@ -1237,7 +1253,7 @@ namespace EclipseDeckReader
                     break;
                 }
 
-                if (tokens[index].Type == TokenType.Keyword)
+                if (IsKeywordLine(tokens, index))
                 {
                     break;
                 }
@@ -1289,7 +1305,7 @@ namespace EclipseDeckReader
                     index++;
                     break;
                 }
-                if (tokens[index].Type == TokenType.Keyword) break;
+                if (IsKeywordLine(tokens, index)) break;
 
                 List<string> record = ReadRecordTokensUntilSlash(tokens, ref index);
                 if (record.Count == 0) continue;
@@ -1337,7 +1353,7 @@ namespace EclipseDeckReader
                     index++;
                     break;
                 }
-                if (tokens[index].Type == TokenType.Keyword) break;
+                if (IsKeywordLine(tokens, index)) break;
 
                 List<string> record = ReadRecordTokensUntilSlash(tokens, ref index);
                 if (record.Count == 0) continue;
@@ -1383,7 +1399,7 @@ namespace EclipseDeckReader
                     break;
                 }
 
-                if (tokens[index].Type == TokenType.Keyword)
+                if (IsKeywordLine(tokens, index))
                     break;
 
                 List<string> record = ReadRecordTokensUntilSlash(tokens, ref index);
