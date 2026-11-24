@@ -76,7 +76,7 @@ namespace EclipseDeckReader
             Console.WriteLine($"* Registered Faults Count  : {deck.Faults.Count}");
             foreach (var kvp in deck.Faults)
             {
-                Console.WriteLine($"  └─ Fault: {kvp.Key,-12} | Face: {kvp.Value.Face} | Mult: {kvp.Value.TransmissibilityMultiplier:F4}");
+                Console.WriteLine($"  └─ Fault: {kvp.Key,-12} | Records: {kvp.Value.Segments.Count} | Faces: {string.Join(",", kvp.Value.Segments.Select(s => s.Face).Distinct())} | Mult: {kvp.Value.TransmissibilityMultiplier:F4}");
             }
             Console.WriteLine();
 
