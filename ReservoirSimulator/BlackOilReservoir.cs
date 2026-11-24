@@ -487,7 +487,7 @@ namespace ReservoirSimulator
 
         public void Simulate(double[] ResultTime = null)
         {
-            if (ResultTime == null) ResultTime = Utility.GetCumulativeTimeArray(DATA.TimeSteps, includeZero: true);
+            if (ResultTime == null) ResultTime = Utility.GetCumulativeTimeArray(DATA.TimeSteps);
             int cores = Environment.ProcessorCount, chunkSize = Ngrids / cores;
 
             (int totalDofs, int[] col_index, int[] row_ptr, double[] JacValues) = ReservoirJacobian.Create(3, Grids, Wells);
@@ -503,7 +503,6 @@ namespace ReservoirSimulator
                 Array.Clear(JacValues, 0, JacValues.Length);
                 Array.Clear(Res, 0, Res.Length);
                 funcall++;
-
 
                 // =========================================================================
                 // 1. HIGH CPU USAGE: Batched Parallel Assembly with Strict Row Ownership
@@ -683,6 +682,7 @@ namespace ReservoirSimulator
                 {
                     var well = Wells[wellidx];
                     well.Qo_np1 = 0.0; well.Qw_np1 = 0.0; well.Ql_np1 = 0.0; well.Qg_np1 = 0.0;
+                    well.Qo = 0.0; well.Qw = 0.0; well.Qg = 0;
                     var wOff = well.Offset;
                     if (!well.isActive)
                     {
@@ -690,7 +690,6 @@ namespace ReservoirSimulator
                         JacValues[wOff.RowConst_dQwell] += 1;
                         continue;
                     }
-
 
                     int rowflow = 3 * NumActiveGrids + 2 * wellidx + 0;  // Rate definition equation
                     int rowconst = 3 * NumActiveGrids + 2 * wellidx + 1; // Constraint equation
@@ -709,7 +708,6 @@ namespace ReservoirSimulator
                     {
                         case WellType.PRODUCER:
                             {
-
                                 for (int p = 0; p < perfCount; p++)
                                 {
                                     int m = well.PerfNatIndex[p];
@@ -738,12 +736,12 @@ namespace ReservoirSimulator
                                     var μw_m = mgrid.μw(Pw_m);
                                     var μg_m = mgrid.μg(Pg_m);
                                     var γo_m = mgrid.γo(Po_m);
-                                    var γg_m = mgrid.γg(Pg_m);
                                     var γw_m = mgrid.γw(Pw_m);
+                                    var γg_m = mgrid.γg(Pg_m);
 
                                     var γo_well = mgrid.γo(pwell);
-                                    var γg_well = mgrid.γg(pwell);
                                     var γw_well = mgrid.γw(pwell);
+                                    var γg_well = mgrid.γg(pwell);
 
                                     var γo_avg = 0.5 * (γo_m + γo_well);
                                     var γw_avg = 0.5 * (γw_m + γw_well);
@@ -792,20 +790,16 @@ namespace ReservoirSimulator
                                     JacValues[wOff.RowFlow_dGrid[p][0]] -= perfRate.Derivative[3] * dt;
                                     JacValues[wOff.RowFlow_dGrid[p][1]] -= perfRate.Derivative[4] * dt;
                                     JacValues[wOff.RowFlow_dGrid[p][2]] -= perfRate.Derivative[5] * dt;
-
-                                    
                                 }
 
-                                // Close Row Q using matching accumulated well rate
+                                // close production equation
                                 Res[rowflow] += FlowRes.Value;
                                 JacValues[wOff.RowFlow_dPwell] += FlowRes.Derivative[0];
                                 JacValues[wOff.RowFlow_dQwell] += FlowRes.Derivative[1];
                                 break;
                             }
 
-
                         case WellType.INJECTOR:
-
                             {
                                 for (int p = 0; p < perfCount; p++)
                                 {
@@ -817,7 +811,6 @@ namespace ReservoirSimulator
                                     int row_o = 3 * i + 0;
                                     int row_w = 3 * i + 1;
                                     int row_g = 3 * i + 2;
-
                                     double dz = mgrid.Center.Z - well.Zref;
 
                                     var Po_m = new ADiff<Vector6d>(xnp1[row_o], new(0, 0, 0, 1, 0, 0));
@@ -849,6 +842,8 @@ namespace ReservoirSimulator
                                             lambdaTotal = mgrid.Krw(1) / (μw_m * Bw_m);
                                         var WIw = mgrid.WI * lambdaTotal;
                                         var rate_water = WIw * DΦw; well.Qw += rate_water;
+
+                                        // Reservoir water equation (injection is inflow: rate * dt)
                                         Res[row_w] += rate_water.Value * dt;
 
                                         // Reservoir water equation (injection is inflow: rate * dt)
@@ -867,7 +862,6 @@ namespace ReservoirSimulator
                                         JacValues[wOff.RowFlow_dGrid[p][0]] -= perfRate.Derivative[3] * dt;
                                         JacValues[wOff.RowFlow_dGrid[p][1]] -= perfRate.Derivative[4] * dt;
                                         JacValues[wOff.RowFlow_dGrid[p][2]] -= perfRate.Derivative[5] * dt;
-                                        
                                     }
                                     if (isGasTarget)
                                     {
@@ -887,15 +881,17 @@ namespace ReservoirSimulator
                                         JacValues[cOff.Diag[7]] += rate_gas.Derivative[4] * dt;
                                         JacValues[cOff.Diag[8]] += rate_gas.Derivative[5] * dt;
 
+                                        // Per-perforation grid derivatives for Row Q
                                         var perfRate = isResTarget ? rate_gas : rate_gas * Bg_m;
 
                                         FlowRes -= perfRate * dt;
                                         JacValues[wOff.RowFlow_dGrid[p][0]] -= perfRate.Derivative[3] * dt;
                                         JacValues[wOff.RowFlow_dGrid[p][1]] -= perfRate.Derivative[4] * dt;
                                         JacValues[wOff.RowFlow_dGrid[p][2]] -= perfRate.Derivative[5] * dt;
-                                        
                                     }
                                 }
+
+                                // Close injection equation
                                 Res[rowflow] += FlowRes.Value;
                                 JacValues[wOff.RowFlow_dPwell] += FlowRes.Derivative[0];
                                 JacValues[wOff.RowFlow_dQwell] += FlowRes.Derivative[1];
