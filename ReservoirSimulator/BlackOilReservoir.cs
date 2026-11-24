@@ -109,10 +109,13 @@ namespace ReservoirSimulator
             Prefr = Utility.Convert(Data.RockReferencePressure, "Pressure", incomingUnit, Units.FIELD);
             Er = P => Exp(cr * (P - Prefr));
 
-            // DENSITIES
-            γo0 = Utility.Convert(Data.SurfaceOilDensity, "Density", incomingUnit, Units.FIELD) / 144;
-            γw0 = Utility.Convert(Data.SurfaceWaterDensity, "Density", incomingUnit, Units.FIELD) / 144;
-            γg0 = Utility.Convert(Data.SurfaceGasDensity, "Density", incomingUnit, Units.FIELD) / 144;
+            const double SCF_PER_MSCF = 1000.0;
+            const double FT3_PER_BBL = 5.614583;
+
+            // DENSITIES -> Gradients [psi/ft * (rb/stb) for oil & water; psi/ft * (rb/Mscf) for gas]
+            γo0 = Utility.Convert(Data.SurfaceOilDensity, "Density", incomingUnit, Units.FIELD) / 144.0;
+            γw0 = Utility.Convert(Data.SurfaceWaterDensity, "Density", incomingUnit, Units.FIELD) / 144.0;
+            γg0 = (Utility.Convert(Data.SurfaceGasDensity, "Density", incomingUnit, Units.FIELD) / 144.0) * (SCF_PER_MSCF / FT3_PER_BBL);
 
             // REGION
             NumActiveGrids = Utility.SetAcitveGrids(Grids, Data.ActnumArray, Er);
@@ -425,10 +428,11 @@ namespace ReservoirSimulator
                 xs[indx++] = qGuess;
             }
         }
+
         public static (double maxPd, double maxSd) ApplyPrimaryVariableUpdate(
-            double[] x, double[] dx, int numActiveGrids, int numWells,
-            double dPmax = 500.0,   // max allowable pressure change per Newton step [psi]
-            double dSmax = 0.20)    // max allowable saturation change per Newton step [-]
+    double[] x, double[] dx, int numActiveGrids, int numWells,
+    double dPmax = 500.0,   // max allowable pressure change per Newton step [psi]
+    double dSmax = 0.10)    // tighter saturation cap for high-mobility 3-phase gas [-]
         {
             double maxPd = 0.0;
             double maxSd = 0.0;
@@ -439,26 +443,33 @@ namespace ReservoirSimulator
                 int idx_p = 3 * i + 0, idx_w = 3 * i + 1, idx_g = 3 * i + 2;
                 double dPo = dx[idx_p], dSw = dx[idx_w], dSg = dx[idx_g];
 
-                // Damping / step-size limiting on pressure
+                // Pressure damping
                 if (Abs(dPo) > dPmax) dPo = Sign(dPo) * dPmax;
 
-                // Damping / step-size limiting on saturation
-                if (Abs(dSw) > dSmax) dSw = Sign(dSw) * dSmax;
-
-                // Damping / step-size limiting on saturation
-                if (Abs(dSg) > dSmax) dSg = Sign(dSg) * dSmax;
+                // Direction-preserving saturation damping
+                double maxCellDs = Max(Abs(dSw), Abs(dSg));
+                if (maxCellDs > dSmax)
+                {
+                    double scale = dSmax / maxCellDs;
+                    dSw *= scale;
+                    dSg *= scale;
+                }
 
                 // Apply update: x = x - dx
-                double p_new = x[idx_p] - dPo;
-                double w_new = x[idx_w] - dSw;
-                double g_new = x[idx_g] - dSg;
+                double p_new = Max(14.7, x[idx_p] - dPo);
+                double w_new = Clamp(x[idx_w] - dSw, 0.0, 1.0);
+                double g_new = Clamp(x[idx_g] - dSg, 0.0, 1.0);
 
-                // Physical bounds enforcement in Field units [psia] and [0, 1]
-                p_new = Max(14.7, p_new);
-                w_new = Clamp(w_new, 0.0, 1.0);
-                g_new = Clamp(g_new, 0.0, 1.0);
+                // Enforce 3-phase saturation simplex: Sw + Sg <= 1.0 (So >= 0.0)
+                double sSum = w_new + g_new;
+                if (sSum > 1.0)
+                {
+                    double invSum = 1.0 / sSum;
+                    w_new *= invSum;
+                    g_new *= invSum;
+                }
 
-                // Track actual applied changes (after damping & clamping)
+                // Track actual applied changes (after damping & projection)
                 double actualPd = Abs(p_new - x[idx_p]);
                 double actualSd = Abs(w_new - x[idx_w]);
                 double actualGd = Abs(g_new - x[idx_g]);
@@ -475,11 +486,14 @@ namespace ReservoirSimulator
             int wellStart = 3 * numActiveGrids;
             for (int w = 0; w < numWells; w++)
             {
-                int idxP = wellStart + 2 * w + 0; // Well pressure [psia]
-                int idxQ = wellStart + 2 * w + 1; // Well rate [stb/day]
+                int idxP = wellStart + 2 * w + 0; // Well BHP [psia]
+                int idxQ = wellStart + 2 * w + 1; // Well rate [stb/day or Mscf/day]
                 double dP = dx[idxP], dQ = dx[idxQ];
-                x[idxP] -= dP; // 
-                x[idxQ] -= dQ; // 
+
+                if (Abs(dP) > dPmax) dP = Sign(dP) * dPmax;
+
+                x[idxP] = Max(14.7, x[idxP] - dP);
+                x[idxQ] -= dQ;
             }
 
             return (maxPd, maxSd);
@@ -534,7 +548,7 @@ namespace ReservoirSimulator
                         var Bo_i = mgrid.Bo(Po_i);
                         var Bw_i = mgrid.Bw(Pw_i);
                         var Bg_i = mgrid.Bg(Pg_i);
-                        var Kro_i = mgrid.Krow(Sw_i);
+                        var Kro_i = mgrid.Kro(Sw_i, Sg_i);
                         var Krw_i = mgrid.Krw(Sw_i);
                         var Krg_i = mgrid.Krg(Sg_i);
                         var μo_i = mgrid.μo(Po_i);
@@ -605,7 +619,7 @@ namespace ReservoirSimulator
                                 var Bo_j = ngrid.Bo(Po_j);
                                 var Bw_j = ngrid.Bw(Pw_j);
                                 var Bg_j = ngrid.Bg(Pg_j);
-                                var Kro_j = ngrid.Krow(Sw_j);
+                                var Kro_j = ngrid.Kro(Sw_j, Sg_j);
                                 var Krw_j = ngrid.Krw(Sw_j);
                                 var Krg_j = ngrid.Krg(Sg_j);
                                 var μo_j = ngrid.μo(Po_j);
@@ -729,7 +743,7 @@ namespace ReservoirSimulator
                                     var Bo_m = mgrid.Bo(Po_m);
                                     var Bw_m = mgrid.Bw(Pw_m);
                                     var Bg_m = mgrid.Bg(Pg_m);
-                                    var Kro_m = mgrid.Krow(Sw_m);
+                                    var Kro_m = mgrid.Kro(Sw_m, Sg_m);
                                     var Krw_m = mgrid.Krw(Sw_m);
                                     var Krg_m = mgrid.Krg(Sg_m);
                                     var μo_m = mgrid.μo(Po_m);
@@ -822,7 +836,7 @@ namespace ReservoirSimulator
                                     var Bo_m = mgrid.Bo(Po_m);
                                     var Bw_m = mgrid.Bw(Pw_m);
                                     var Bg_m = mgrid.Bg(Pg_m);
-                                    var Kro_m = mgrid.Krow(Sw_m);
+                                    var Kro_m = mgrid.Kro(Sw_m, Sg_m);
                                     var Krw_m = mgrid.Krw(Sw_m);
                                     var Krg_m = mgrid.Krg(Sg_m);
                                     var μo_m = mgrid.μo(Po_m);

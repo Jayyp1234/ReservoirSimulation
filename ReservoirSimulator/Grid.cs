@@ -24,6 +24,21 @@ namespace ReservoirSimulator
         public double Po_np1, Pw_np1, Pg_np1, Sw_np1, So_np1, Sg_np1, Pb_np1, Pd_np1, Bo_np1, Bw_np1, Bg_np1;
         public ADiff<T> ErSo_Bo_np1, ErSw_Bw_np1, ErSg_Bg_np1;
         public Func<ADiff<T>, ADiff<T>> Krw, Krow, Krg, Krog, Pcow, Pcog, Pcgw, Bo, Bw, Bg, μo, μw, μg, γo, γw, γg, Er, Rs, Rv;
+        
+        // Baker's 3-phase relative permeability (smooth everywhere on the Sw-Sg triangle)
+        public ADiff<T> Kro(ADiff<T> sw, ADiff<T> sg)
+        {
+            var krow = Krow(sw);
+            var krog = Krog(sg);
+            var swEff = sw;
+            var denom = swEff + sg;
+
+            // When Sg == 0 and Sw == Swi, Kro = Krow(Swi) = 1.0
+            if (denom.Value <= 1e-12)
+                return krow;
+
+            return (swEff * krow + sg * krog) / denom;
+        }
         public int ActiveIndex { get; set; } = -1;
         public int GlobalIndex { get; set; } = -1;
         public (int i, int j, int k) IJKIndex { get; set; }
