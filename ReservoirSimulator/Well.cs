@@ -348,6 +348,12 @@ namespace ReservoirSimulator
             ConstraintType == ConstraintType.GRATE ||
             (ConstraintType == ConstraintType.RATE && PreferedPhase == Phase.GAS);
 
+        internal bool IsResTarget =>
+            ConstraintType == ConstraintType.RESV;
+
+        internal bool IsLiqTarget =>
+           ConstraintType == ConstraintType.LRATE;
+
         internal ADiff<T> Constraint(ADiff<T> pressure, ADiff<T> rate)
         {
             // Surface valve shut ("STOP"): enforce zero net surface rate while tracking static Pwf

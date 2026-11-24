@@ -530,6 +530,7 @@ namespace ReservoirSimulator
 
                     var pwell = new ADiff<Vector4d>(xnp1[rowflow], new(1, 0, 0, 0));
                     var qwell = new ADiff<Vector4d>(xnp1[rowconst], new(0, 1, 0, 0));
+                    var FlowRes = qwell * dt;
 
                     well.Qo = default;
                     well.Qw = default;
@@ -537,6 +538,7 @@ namespace ReservoirSimulator
                     int perfCount = well.PerfNatIndex.Count;
                     bool isWaterTarget = well.IsWaterTarget;
                     bool isOilTarget = well.IsOilTarget;
+                    bool isLiqTarget = well.IsLiqTarget;
 
                     switch (well.WellType)
                     {
@@ -580,9 +582,8 @@ namespace ReservoirSimulator
                                     var WIo = mgrid.WI * (Kro_m / (μo_m * Bo_m));
                                     var WIw = mgrid.WI * (Krw_m / (μw_m * Bw_m));
 
-                                    var rate_oil = WIo * DΦo;
-                                    var rate_water = WIw * DΦw;
-
+                                    var rate_oil = WIo * DΦo; well.Qo += rate_oil;
+                                    var rate_water = WIw * DΦw; well.Qw += rate_water;
 
                                     // Reservoir residuals & Jacobian entries (outflow is +rate * dt)
                                     Res[row_o] += rate_oil.Value * dt;
@@ -600,20 +601,14 @@ namespace ReservoirSimulator
                                     // Per-perforation grid derivatives for Row Q
                                     var perfRate = isWaterTarget ? rate_water
                                                     : isOilTarget ? rate_oil
-                                                    : rate_oil + rate_water;
+                                                    : isLiqTarget ? rate_oil + rate_water
+                                                    : rate_oil * Bo_m + rate_water * Bw_m;
 
+                                    FlowRes -= perfRate * dt;
                                     JacValues[wOff.RowFlow_dGrid[p][0]] -= perfRate.Derivative[2] * dt;
                                     JacValues[wOff.RowFlow_dGrid[p][1]] -= perfRate.Derivative[3] * dt;
-
-                                    well.Qo += rate_oil;  well.Qw += rate_water;
                                 }
-
                                 // Close Row Q using matching accumulated well rate
-                                ADiff<Vector4d> wellRate = isWaterTarget ? well.Qw
-                                                         : isOilTarget ? well.Qo
-                                                         : well.Ql;
-
-                                ADiff<Vector4d> FlowRes = (qwell - wellRate)*dt;
                                 Res[rowflow] += FlowRes.Value;
                                 JacValues[wOff.RowFlow_dPwell] += FlowRes.Derivative[0];
                                 JacValues[wOff.RowFlow_dQwell] += FlowRes.Derivative[1];
@@ -622,7 +617,6 @@ namespace ReservoirSimulator
 
 
                         case WellType.INJECTOR:
-
                             {
                                 for (int p = 0; p < perfCount; p++)
                                 {
@@ -649,9 +643,8 @@ namespace ReservoirSimulator
 
                                     var DΦw = Pw_m - pwell - gw_avg * dz;
                                     // Phase-weighted total mobility in perforated cell
-                                    var lambdaTotal = mgrid.Krw(1) / (μw_m * Bw_m);
-                                    var WIw = mgrid.WI * lambdaTotal;
-                                    var rate_water = WIw * DΦw;
+                                    var WIw = mgrid.WI * (mgrid.Krw(1) / (μw_m * Bw_m));
+                                    var rate_water = WIw * DΦw; well.Qw += rate_water;
 
                                     // Reservoir water equation (injection is inflow: rate * dt)
                                     Res[row_w] += rate_water.Value * dt;
@@ -662,14 +655,16 @@ namespace ReservoirSimulator
                                     JacValues[cOff.Diag[2]] += rate_water.Derivative[2] * dt;
                                     JacValues[cOff.Diag[3]] += rate_water.Derivative[3] * dt;
 
-                                    JacValues[wOff.RowFlow_dGrid[p][0]] -= rate_water.Derivative[2] * dt;
-                                    JacValues[wOff.RowFlow_dGrid[p][1]] -= rate_water.Derivative[3] * dt;
+                                    // Per-perforation grid derivatives for Row Q
+                                    var perfRate = isWaterTarget ? rate_water
+                                                    : rate_water * Bw_m;
 
-                                    well.Qw += rate_water;
+                                    FlowRes -= perfRate * dt;
+                                    JacValues[wOff.RowFlow_dGrid[p][0]] -= perfRate.Derivative[2] * dt;
+                                    JacValues[wOff.RowFlow_dGrid[p][1]] -= perfRate.Derivative[3] * dt;
                                 }
 
                                 // Close Row Q using well.Qw
-                                ADiff<Vector4d> FlowRes = (qwell - well.Qw) * dt;
                                 Res[rowflow] += FlowRes.Value;
                                 JacValues[wOff.RowFlow_dPwell] += FlowRes.Derivative[0];
                                 JacValues[wOff.RowFlow_dQwell] += FlowRes.Derivative[1];
@@ -737,6 +732,7 @@ namespace ReservoirSimulator
                                 ConstraintType.WRATE => prod.WaterRateTarget,
                                 ConstraintType.GRATE => prod.GasRateTarget,
                                 ConstraintType.LRATE => prod.LiquidRateTarget,
+                                ConstraintType.RESV => prod.ResvRateTarget,
                                 _ => Max(prod.OilRateTarget, Max(prod.WaterRateTarget, prod.LiquidRateTarget))
                             };
                         }

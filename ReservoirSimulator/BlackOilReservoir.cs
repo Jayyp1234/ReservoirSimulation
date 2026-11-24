@@ -501,8 +501,8 @@ namespace ReservoirSimulator
             if (ResultTime == null) ResultTime = GetCumulativeTimeArray(DATA.TimeSteps, includeZero: true);
             int cores = Environment.ProcessorCount, chunkSize = Ngrids / cores;
 
-            (int totalDofs, int[] col_index, int[] row_ptr, double[] JacValues) = ReservoirJacobian.Create(2, Grids, Wells);
-            ReservoirJacobian.PrecomputeOffsets(2, row_ptr, col_index, Grids, Wells);
+            (int totalDofs, int[] col_index, int[] row_ptr, double[] JacValues) = ReservoirJacobian.Create(3, Grids, Wells);
+            ReservoirJacobian.PrecomputeOffsets(3, row_ptr, col_index, Grids, Wells);
             double[] xs = new double[totalDofs], Res = new double[totalDofs], dx = new double[totalDofs];
             MklPardisoSolver solver = new MklPardisoSolver(totalDofs, row_ptr, col_index);
 
@@ -527,119 +527,163 @@ namespace ReservoirSimulator
 
                     for (int m = start; m < end; m++)
                     {
-                    var mgrid = Grids[m];
+                        var mgrid = Grids[m];
 
-                    if (!mgrid.isActive) continue;
-                    int i = mgrid.ActiveIndex;
-                    int row_o = 3 * i + 0, row_w = 3 * i + 1, row_g = 3 * i + 2;
+                        if (!mgrid.isActive) continue;
+                        int i = mgrid.ActiveIndex;
+                        int row_o = 3 * i + 0, row_w = 3 * i + 1, row_g = 3 * i + 2;
 
-                    // Primary variables for cell i
-                    var Po_i = new ADiff<Vector6d>(xnp1[row_o], new(1, 0, 0, 0, 0, 0));
-                    var Sw_i = new ADiff<Vector6d>(xnp1[row_w], new(0, 1, 0, 0, 0, 0));
-                    var Sg_i = new ADiff<Vector6d>(xnp1[row_g], new(0, 0, 1, 0, 0, 0));
+                        // Primary variables for cell i
+                        var Po_i = new ADiff<Vector6d>(xnp1[3 * i + 0], new(1, 0, 0, 0, 0, 0));
+                        var Sw_i = new ADiff<Vector6d>(xnp1[3 * i + 1], new(0, 1, 0, 0, 0, 0));
+                        var Sg_i = new ADiff<Vector6d>(xnp1[3 * i + 2], new(0, 0, 1, 0, 0, 0));
                         var Pw_i = Po_i - mgrid.Pcow(Sw_i);
-                    var So_i = 1.0 - Sw_i;
+                        var Pg_i = Po_i + mgrid.Pcog(Sg_i);
+                        var So_i = 1.0 - Sw_i - Sg_i;
 
-                    var meanP = So_i * Po_i + Sw_i * Pw_i;
-                    var Er_i = mgrid.Er(meanP);
-                    var Bo_i = mgrid.Bo(Po_i);
-                    var Bw_i = mgrid.Bw(Pw_i);
-                    var Kro_i = mgrid.Krow(Sw_i);
-                    var Krw_i = mgrid.Krw(Sw_i);
-                    var μo_i = mgrid.μo(Po_i);
-                    var μw_i = mgrid.μw(Pw_i);
-                    var γo_i = mgrid.γo(Po_i);
-                    var γw_i = mgrid.γw(Pw_i);
-                    var λo_i = Kro_i / (μo_i * Bo_i);
-                    var λw_i = Krw_i / (μw_i * Bw_i);
+                        var meanP = So_i * Po_i + Sw_i * Pw_i + Sg_i * Pg_i;
+                        var Er_i = mgrid.Er(meanP);
+                        var Bo_i = mgrid.Bo(Po_i);
+                        var Bw_i = mgrid.Bw(Pw_i);
+                        var Bg_i = mgrid.Bg(Pg_i);
+                        var Kro_i = mgrid.Krow(Sw_i);
+                        var Krw_i = mgrid.Krw(Sw_i);
+                        var Krg_i = mgrid.Krg(Sg_i);
+                        var μo_i = mgrid.μo(Po_i);
+                        var μw_i = mgrid.μw(Pw_i);
+                        var μg_i = mgrid.μg(Pg_i);
+                        var γo_i = mgrid.γo(Po_i);
+                        var γw_i = mgrid.γw(Pw_i);
+                        var γg_i = mgrid.γg(Pg_i);
+                        var λo_i = Kro_i / (μo_i * Bo_i);
+                        var λw_i = Krw_i / (μw_i * Bw_i);
+                        var λg_i = Krg_i / (μg_i * Bg_i);
 
-                    mgrid.Po_np1 = Po_i.Value; mgrid.So_np1 = So_i.Value; mgrid.Bo_np1 = Bo_i.Value;
-                    mgrid.Pw_np1 = Pw_i.Value; mgrid.Sw_np1 = Sw_i.Value; mgrid.Bw_np1 = Bw_i.Value;
-                    mgrid.ErSo_Bo_np1 = Er_i * So_i / Bo_i; mgrid.ErSw_Bw_np1 = Er_i * Sw_i / Bw_i;
+                        mgrid.Po_np1 = Po_i.Value; mgrid.So_np1 = So_i.Value; mgrid.Bo_np1 = Bo_i.Value;
+                        mgrid.Pw_np1 = Pw_i.Value; mgrid.Sw_np1 = Sw_i.Value; mgrid.Bw_np1 = Bw_i.Value;
+                        mgrid.Pg_np1 = Pg_i.Value; mgrid.Sg_np1 = Sg_i.Value; mgrid.Bg_np1 = Bg_i.Value;
+                        mgrid.ErSo_Bo_np1 = Er_i * So_i / Bo_i;
+                        mgrid.ErSw_Bw_np1 = Er_i * Sw_i / Bw_i;
+                        mgrid.ErSg_Bg_np1 = Er_i * Sg_i / Bg_i;
 
-                    // Accumulation Residual: R = Vp * (State^{n+1} - State^n)
-                    var ResOil = mgrid.PoreVolume * (mgrid.ErSo_Bo_np1 - mgrid.ErSo_Bo_n);
-                    var ResWater = mgrid.PoreVolume * (mgrid.ErSw_Bw_np1 - mgrid.ErSw_Bw_n);
+                        // Accumulation Residual: R = Vp * (State^{n+1} - State^n)
+                        var ResOil = mgrid.PoreVolume * (mgrid.ErSo_Bo_np1 - mgrid.ErSo_Bo_n);
+                        var ResWater = mgrid.PoreVolume * (mgrid.ErSw_Bw_np1 - mgrid.ErSw_Bw_n);
+                        var ResGas = mgrid.PoreVolume * (mgrid.ErSg_Bg_np1 - mgrid.ErSg_Bg_n);
 
-                    // Direct write to Residual Vector
-                    Res[row_o] += ResOil.Value;
-                    Res[row_w] += ResWater.Value;
+                        // Direct write to Residual Vector
+                        Res[row_o] += ResOil.Value;
+                        Res[row_w] += ResWater.Value;
+                        Res[row_g] += ResGas.Value;
 
-                    // Direct write to Accumulation Jacobian (Block i, i)
-                    var cOff = mgrid.Offset;
-                    JacValues[cOff.Diag[0]] += ResOil.Derivative[0];   // row_o, col_p_i
-                    JacValues[cOff.Diag[1]] += ResOil.Derivative[1];   // row_o, col_sw_i
-                    JacValues[cOff.Diag[2]] += ResWater.Derivative[0]; // row_w, col_p_i
-                    JacValues[cOff.Diag[3]] += ResWater.Derivative[1]; // row_w, col_sw_i
+                        // Direct write to Accumulation Jacobian (Block i, i)
+                        var cOff = mgrid.Offset;
+                        JacValues[cOff.Diag[0]] += ResOil.Derivative[0];   // row_o, col_p_i
+                        JacValues[cOff.Diag[1]] += ResOil.Derivative[1];   // row_o, col_sw_i
+                        JacValues[cOff.Diag[2]] += ResOil.Derivative[2];   // row_o, col_sg_i
+
+                        JacValues[cOff.Diag[3]] += ResWater.Derivative[0]; // row_w, col_p_i
+                        JacValues[cOff.Diag[4]] += ResWater.Derivative[1]; // row_w, col_sw_i
+                        JacValues[cOff.Diag[5]] += ResWater.Derivative[2]; // row_w, col_sg_i
+
+                        JacValues[cOff.Diag[6]] += ResGas.Derivative[0];  // row_g, col_p_i
+                        JacValues[cOff.Diag[7]] += ResGas.Derivative[1];  // row_g, col_sw_i
+                        JacValues[cOff.Diag[8]] += ResGas.Derivative[2];  // row_g, col_sg_i
 
 
-                    // Inter-cell flux loop
-                    int faceCount = mgrid.Faces.Length;
-                    for (int f = 0; f < faceCount; f++)
-                    {
-                        var face = mgrid.Faces[f];
-                        for (int c = 0; c < face.GridIndices.Count; c++)
+                        // Inter-cell flux loop
+                        int faceCount = mgrid.Faces.Length;
+                        for (int f = 0; f < faceCount; f++)
                         {
-                            int n = face.GridIndices[c];
-                            var ngrid = Grids[n];
+                            var face = mgrid.Faces[f];
+                            for (int c = 0; c < face.GridIndices.Count; c++)
+                            {
+                                int n = face.GridIndices[c];
+                                var ngrid = Grids[n];
 
-                            // Guard: Skip inactive neighbor blocks (no-flow boundary)
-                            if (!ngrid.isActive) continue;
+                                // Guard: Skip inactive neighbor blocks (no-flow boundary)
+                                if (!ngrid.isActive) continue;
 
-                            int j = ngrid.ActiveIndex;
-                            double transDt = face.Transmissibility[c] * dt;
-                            double dz = mgrid.Center.Z - ngrid.Center.Z;
+                                int j = ngrid.ActiveIndex;
+                                double transDt = face.Transmissibility[c] * dt;
+                                double dz = mgrid.Center.Z - ngrid.Center.Z;
 
-                            var Po_j = new ADiff<Vector4d>(xnp1[2 * j + 0], new(0, 0, 1, 0));
-                            var Sw_j = new ADiff<Vector4d>(xnp1[2 * j + 1], new(0, 0, 0, 1));
-                            var Pw_j = Po_j - ngrid.Pcow(Sw_j);
-                            var So_j = 1.0 - Sw_j;
-                            var Bo_j = ngrid.Bo(Po_j);
-                            var Bw_j = ngrid.Bw(Pw_j);
-                            var Kro_j = ngrid.Krow(Sw_j);
-                            var Krw_j = ngrid.Krw(Sw_j);
-                            var μo_j = ngrid.μo(Po_j);
-                            var μw_j = ngrid.μw(Pw_j);
-                            var γo_j = ngrid.γo(Po_j);
-                            var γw_j = ngrid.γw(Pw_j);
-                            var λo_j = Kro_j / (μo_j * Bo_j);
-                            var λw_j = Krw_j / (μw_j * Bw_j);
+                                var Po_j = new ADiff<Vector6d>(xnp1[3 * j + 0], new(0, 0, 0, 1, 0, 0));
+                                var Sw_j = new ADiff<Vector6d>(xnp1[3 * j + 1], new(0, 0, 0, 0, 1, 0));
+                                var Sg_j = new ADiff<Vector6d>(xnp1[3 * j + 2], new(0, 0, 0, 0, 0, 1));
+                                var Pw_j = Po_j - ngrid.Pcow(Sw_j);
+                                var Pg_j = Po_j + ngrid.Pcog(Sg_j);
+                                var So_j = 1.0 - Sw_j - Sg_j;
+                                var Bo_j = ngrid.Bo(Po_j);
+                                var Bw_j = ngrid.Bw(Pw_j);
+                                var Bg_j = ngrid.Bg(Pg_j);
+                                var Kro_j = ngrid.Krow(Sw_j);
+                                var Krw_j = ngrid.Krw(Sw_j);
+                                var Krg_j = ngrid.Krg(Sg_j);
+                                var μo_j = ngrid.μo(Po_j);
+                                var μw_j = ngrid.μw(Pw_j);
+                                var μg_j = ngrid.μg(Pg_j);
+                                var γo_j = ngrid.γo(Po_j);
+                                var γw_j = ngrid.γw(Pw_j);
+                                var γg_j = ngrid.γg(Pg_j);
+                                var λo_j = Kro_j / (μo_j * Bo_j);
+                                var λw_j = Krw_j / (μw_j * Bw_j);
+                                var λg_j = Krg_j / (μg_j * Bg_j);
 
-                            // Hydrostatic potential differences
-                            var γo_avg = 0.5 * (γo_i + γo_j);
-                            var γw_avg = 0.5 * (γw_i + γw_j);
-                            var DΦo = Po_i - Po_j - γo_avg * dz;
-                            var DΦw = Pw_i - Pw_j - γw_avg * dz;
+                                // Hydrostatic potential differences
+                                var γo_avg = 0.5 * (γo_i + γo_j);
+                                var γw_avg = 0.5 * (γw_i + γw_j);
+                                var γg_avg = 0.5 * (γg_i + γg_j);
+                                var DΦo = Po_i - Po_j - γo_avg * dz;
+                                var DΦw = Pw_i - Pw_j - γw_avg * dz;
+                                var DΦg = Pg_i - Pg_j - γg_avg * dz;
 
-                            // Upstream phase mobilities
-                            var λo_up = Utility.SmoothUpstream(DΦo, λo_i, λo_j);
-                            var λw_up = Utility.SmoothUpstream(DΦw, λw_i, λw_j);
+                                // Upstream phase mobilities
+                                var λo_up = Utility.SmoothUpstream(DΦo, λo_i, λo_j);
+                                var λw_up = Utility.SmoothUpstream(DΦw, λw_i, λw_j);
+                                var λg_up = Utility.SmoothUpstream(DΦg, λg_i, λg_j);
 
-                            // Outflow flux from cell i to cell j
-                            var FluxOil = transDt * λo_up * DΦo;
-                            var FluxWater = transDt * λw_up * DΦw;
+                                // Outflow flux from cell i to cell j
+                                var FluxOil = transDt * λo_up * DΦo;
+                                var FluxWater = transDt * λw_up * DΦw;
+                                var FluxGas = transDt * λg_up * DΦg;
 
-                            // Direct write to Flux Residual
-                            Res[row_o] += FluxOil.Value;
-                            Res[row_w] += FluxWater.Value;
+                                // Direct write to Flux Residual
+                                Res[row_o] += FluxOil.Value;
+                                Res[row_w] += FluxWater.Value;
+                                Res[row_g] += FluxGas.Value;
 
-                            // Direct write to Jacobian using precomputed face offsets
-                            var fOff = face.Offset[c];
+                                // Direct write to Jacobian using precomputed face offsets
+                                var fOff = face.Offset[c];
 
-                            // Block (i, i) -> Derivatives wrt Cell i variables (slots 0 and 1)
-                            JacValues[cOff.Diag[0]] += FluxOil.Derivative[0];   // row_o, col_p_i
-                            JacValues[cOff.Diag[1]] += FluxOil.Derivative[1];   // row_o, col_sw_i
-                            JacValues[cOff.Diag[2]] += FluxWater.Derivative[0]; // row_w, col_p_i
-                            JacValues[cOff.Diag[3]] += FluxWater.Derivative[1]; // row_w, col_sw_i
+                                // Block (i, i) -> Derivatives wrt Cell i variables (slots 0, 1, 2)
+                                JacValues[cOff.Diag[0]] += FluxOil.Derivative[0];   // row_o, col_p_i
+                                JacValues[cOff.Diag[1]] += FluxOil.Derivative[1];   // row_o, col_sw_i
+                                JacValues[cOff.Diag[2]] += FluxOil.Derivative[2];   // row_o, col_sg_i
 
-                            // Block (i, j) -> Derivatives wrt Neighbor j variables (slots 2 and 3)
-                            JacValues[fOff.Neighbor[0]] += FluxOil.Derivative[2];   // row_o, col_p_j
-                            JacValues[fOff.Neighbor[1]] += FluxOil.Derivative[3];   // row_o, col_sw_j
-                            JacValues[fOff.Neighbor[2]] += FluxWater.Derivative[2]; // row_w, col_p_j
-                            JacValues[fOff.Neighbor[3]] += FluxWater.Derivative[3]; // row_w, col_sw_j
+                                JacValues[cOff.Diag[3]] += FluxWater.Derivative[0]; // row_w, col_p_i
+                                JacValues[cOff.Diag[4]] += FluxWater.Derivative[1]; // row_w, col_sw_i
+                                JacValues[cOff.Diag[5]] += FluxWater.Derivative[2]; // row_w, col_sg_i
+
+                                JacValues[cOff.Diag[6]] += FluxGas.Derivative[0];  // row_g, col_p_i
+                                JacValues[cOff.Diag[7]] += FluxGas.Derivative[1];  // row_g, col_sw_i
+                                JacValues[cOff.Diag[8]] += FluxGas.Derivative[2];  // row_g, col_sg_i
+
+                                // Block (i, j) -> Derivatives wrt Neighbor j variables (slots 3, 4, 5)
+                                JacValues[fOff.Neighbor[0]] += FluxOil.Derivative[3];   // row_o, col_p_j
+                                JacValues[fOff.Neighbor[1]] += FluxOil.Derivative[4];   // row_o, col_sw_j
+                                JacValues[fOff.Neighbor[2]] += FluxOil.Derivative[5];   // row_o, col_sg_j
+
+                                JacValues[fOff.Neighbor[3]] += FluxWater.Derivative[3]; // row_w, col_p_j
+                                JacValues[fOff.Neighbor[4]] += FluxWater.Derivative[4]; // row_w, col_sw_j
+                                JacValues[fOff.Neighbor[5]] += FluxWater.Derivative[5]; // row_w, col_sg_j
+
+                                JacValues[fOff.Neighbor[6]] += FluxGas.Derivative[3];  // row_g, col_p_j
+                                JacValues[fOff.Neighbor[7]] += FluxGas.Derivative[4];  // row_g, col_sw_j
+                                JacValues[fOff.Neighbor[8]] += FluxGas.Derivative[5];  // row_g, col_sg_j
+                            }
                         }
                     }
-                }
                 });
 
                 // =========================================================================
@@ -658,24 +702,27 @@ namespace ReservoirSimulator
                     }
 
 
-                    int rowflow = 2 * NumActiveGrids + 2 * wellidx + 0;  // Rate definition equation
-                    int rowconst = 2 * NumActiveGrids + 2 * wellidx + 1; // Constraint equation
+                    int rowflow = 3 * NumActiveGrids + 2 * wellidx + 0;  // Rate definition equation
+                    int rowconst = 3 * NumActiveGrids + 2 * wellidx + 1; // Constraint equation
 
-                    var pwell = new ADiff<Vector4d>(xnp1[rowflow], new(1, 0, 0, 0));
-                    var qwell = new ADiff<Vector4d>(xnp1[rowconst], new(0, 1, 0, 0));
-
+                    var pwell = new ADiff<Vector6d>(xnp1[rowflow], new(1, 0, 0, 0, 0, 0));
+                    var qwell = new ADiff<Vector6d>(xnp1[rowconst], new(0, 1, 0, 0, 0, 0));
+                    var FlowRes = qwell * dt;
                     well.Qo = default;
                     well.Qw = default;
+                    well.Qg = default;
 
                     int perfCount = well.PerfNatIndex.Count;
                     bool isWaterTarget = well.IsWaterTarget;
                     bool isOilTarget = well.IsOilTarget;
+                    bool isGasTarget = well.IsGasTarget;
+                    bool isResTarget = well.IsResTarget;
 
                     switch (well.WellType)
                     {
                         case WellType.PRODUCER:
-
                             {
+
                                 for (int p = 0; p < perfCount; p++)
                                 {
                                     int m = well.PerfNatIndex[p];
@@ -683,70 +730,86 @@ namespace ReservoirSimulator
                                     if (!well.PerfIsOpen[p] || !mgrid.isActive) continue;
 
                                     int i = mgrid.ActiveIndex;
-                                    int row_o = 2 * i + 0;
-                                    int row_w = 2 * i + 1;
+                                    int row_o = 3 * i + 0;
+                                    int row_w = 3 * i + 1;
+                                    int row_g = 3 * i + 2;
 
-                                    var Po_m = new ADiff<Vector4d>(xnp1[row_o], new(0, 0, 1, 0));
-                                    var Sw_m = new ADiff<Vector4d>(xnp1[row_w], new(0, 0, 0, 1));
+                                    var Po_m = new ADiff<Vector6d>(xnp1[row_o], new(0, 0, 0, 1, 0, 0));
+                                    var Sw_m = new ADiff<Vector6d>(xnp1[row_w], new(0, 0, 0, 0, 1, 0));
+                                    var Sg_m = new ADiff<Vector6d>(xnp1[row_g], new(0, 0, 0, 0, 0, 1));
                                     var Pw_m = Po_m - mgrid.Pcow(Sw_m);
-                                    var So_m = 1.0 - Sw_m;
+                                    var Pg_m = Po_m + mgrid.Pcog(Sg_m);
+                                    var So_m = 1.0 - Sw_m - Sg_m;
 
                                     var Bo_m = mgrid.Bo(Po_m);
                                     var Bw_m = mgrid.Bw(Pw_m);
+                                    var Bg_m = mgrid.Bg(Pg_m);
                                     var Kro_m = mgrid.Krow(Sw_m);
                                     var Krw_m = mgrid.Krw(Sw_m);
+                                    var Krg_m = mgrid.Krg(Sg_m);
                                     var μo_m = mgrid.μo(Po_m);
                                     var μw_m = mgrid.μw(Pw_m);
+                                    var μg_m = mgrid.μg(Pg_m);
                                     var γo_m = mgrid.γo(Po_m);
+                                    var γg_m = mgrid.γg(Pg_m);
                                     var γw_m = mgrid.γw(Pw_m);
 
                                     var γo_well = mgrid.γo(pwell);
+                                    var γg_well = mgrid.γg(pwell);
                                     var γw_well = mgrid.γw(pwell);
 
-                                    var go_avg = 0.5 * (γo_m + γo_well);
-                                    var gw_avg = 0.5 * (γw_m + γw_well);
+                                    var γo_avg = 0.5 * (γo_m + γo_well);
+                                    var γw_avg = 0.5 * (γw_m + γw_well);
+                                    var γg_avg = 0.5 * (γg_m + γg_well);
                                     double dz = mgrid.Center.Z - well.Zref;
 
-                                    var DΦo = Po_m - pwell - go_avg * dz;
-                                    var DΦw = Pw_m - pwell - gw_avg * dz;
+                                    var DΦo = Po_m - pwell - γo_avg * dz;
+                                    var DΦw = Pw_m - pwell - γw_avg * dz;
+                                    var DΦg = Pg_m - pwell - γg_avg * dz;
 
                                     var WIo = mgrid.WI * (Kro_m / (μo_m * Bo_m));
                                     var WIw = mgrid.WI * (Krw_m / (μw_m * Bw_m));
+                                    var WIg = mgrid.WI * (Krg_m / (μg_m * Bg_m));
 
                                     var rate_oil = WIo * DΦo;
                                     var rate_water = WIw * DΦw;
-
+                                    var rate_gas = WIg * DΦg;
 
                                     // Reservoir residuals & Jacobian entries (outflow is +rate * dt)
                                     Res[row_o] += rate_oil.Value * dt;
                                     Res[row_w] += rate_water.Value * dt;
+                                    Res[row_g] += rate_gas.Value * dt;
 
                                     JacValues[wOff.Rm_dPwell[p][0]] += rate_oil.Derivative[0] * dt;
                                     JacValues[wOff.Rm_dPwell[p][1]] += rate_water.Derivative[0] * dt;
+                                    JacValues[wOff.Rm_dPwell[p][2]] += rate_gas.Derivative[0] * dt;
 
                                     var cOff = mgrid.Offset;
-                                    JacValues[cOff.Diag[0]] += rate_oil.Derivative[2] * dt;
-                                    JacValues[cOff.Diag[1]] += rate_oil.Derivative[3] * dt;
-                                    JacValues[cOff.Diag[2]] += rate_water.Derivative[2] * dt;
+                                    JacValues[cOff.Diag[0]] += rate_oil.Derivative[3] * dt;
+                                    JacValues[cOff.Diag[1]] += rate_oil.Derivative[4] * dt;
+                                    JacValues[cOff.Diag[2]] += rate_oil.Derivative[5] * dt;
                                     JacValues[cOff.Diag[3]] += rate_water.Derivative[3] * dt;
+                                    JacValues[cOff.Diag[4]] += rate_water.Derivative[4] * dt;
+                                    JacValues[cOff.Diag[5]] += rate_water.Derivative[5] * dt;
+                                    JacValues[cOff.Diag[6]] += rate_gas.Derivative[3] * dt;
+                                    JacValues[cOff.Diag[7]] += rate_gas.Derivative[4] * dt;
+                                    JacValues[cOff.Diag[8]] += rate_gas.Derivative[5] * dt;
 
                                     // Per-perforation grid derivatives for Row Q
                                     var perfRate = isWaterTarget ? rate_water
                                                     : isOilTarget ? rate_oil
+                                                    : isGasTarget ? rate_gas
                                                     : rate_oil + rate_water;
 
-                                    JacValues[wOff.RowFlow_dGrid[p][0]] -= perfRate.Derivative[2] * dt;
-                                    JacValues[wOff.RowFlow_dGrid[p][1]] -= perfRate.Derivative[3] * dt;
+                                    FlowRes -= perfRate * dt;
+                                    JacValues[wOff.RowFlow_dGrid[p][0]] -= perfRate.Derivative[3] * dt;
+                                    JacValues[wOff.RowFlow_dGrid[p][1]] -= perfRate.Derivative[4] * dt;
+                                    JacValues[wOff.RowFlow_dGrid[p][2]] -= perfRate.Derivative[5] * dt;
 
-                                    well.Qo += rate_oil; well.Qw += rate_water;
+                                    well.Qo += rate_oil; well.Qw += rate_water; well.Qg += rate_gas;
                                 }
 
                                 // Close Row Q using matching accumulated well rate
-                                ADiff<Vector4d> wellRate = isWaterTarget ? well.Qw
-                                                         : isOilTarget ? well.Qo
-                                                         : well.Ql;
-
-                                ADiff<Vector4d> FlowRes = (qwell - wellRate) * dt;
                                 Res[rowflow] += FlowRes.Value;
                                 JacValues[wOff.RowFlow_dPwell] += FlowRes.Derivative[0];
                                 JacValues[wOff.RowFlow_dQwell] += FlowRes.Derivative[1];
@@ -764,45 +827,76 @@ namespace ReservoirSimulator
                                     if (!well.PerfIsOpen[p] || !mgrid.isActive) continue;
 
                                     int i = mgrid.ActiveIndex;
-                                    int row_o = 2 * i + 0;
-                                    int row_w = 2 * i + 1;
+                                    int row_o = 3 * i + 0;
+                                    int row_w = 3 * i + 1;
+                                    int row_g = 3 * i + 2;
 
-                                    var Po_m = new ADiff<Vector4d>(xnp1[row_o], new(0, 0, 1, 0));
-                                    var Sw_m = new ADiff<Vector4d>(xnp1[row_w], new(0, 0, 0, 1));
-                                    var Pw_m = Po_m - mgrid.Pcow(Sw_m);
-
-                                    var Bw_m = mgrid.Bw(Pw_m);
-                                    var μw_m = mgrid.μw(Pw_m);
-
-                                    var γw_well = mgrid.γw(pwell);
-                                    var γw_m = mgrid.γw(Pw_m);
-
-                                    var gw_avg = 0.5 * (γw_m + γw_well);
                                     double dz = mgrid.Center.Z - well.Zref;
 
-                                    var DΦw = Pw_m - pwell - gw_avg * dz;
-                                    // Phase-weighted total mobility in perforated cell
-                                    var lambdaTotal = mgrid.Krw(1) / (μw_m * Bw_m);
-                                    var WIw = mgrid.WI * lambdaTotal;
-                                    var rate_water = WIw * DΦw;
+                                    var Po_m = new ADiff<Vector6d>(xnp1[row_o], new(0, 0, 0, 1, 0, 0));
+                                    var Sw_m = new ADiff<Vector6d>(xnp1[row_w], new(0, 0, 0, 0, 1, 0));
+                                    var Sg_m = new ADiff<Vector6d>(xnp1[row_g], new(0, 0, 0, 0, 0, 1));
+                                    var Pw_m = Po_m - mgrid.Pcow(Sw_m);
+                                    var Pg_m = Po_m + mgrid.Pcog(Sg_m);
+                                    var So_m = 1.0 - Sw_m - Sg_m;
 
-                                    // Reservoir water equation (injection is inflow: rate * dt)
-                                    Res[row_w] += rate_water.Value * dt;
+                                    if (isWaterTarget)
+                                    {
+                                        var Bw_m = mgrid.Bw(Pw_m);
+                                        var μw_m = mgrid.μw(Pw_m);
+                                        var γw_well = mgrid.γw(pwell);
+                                        var γw_m = mgrid.γw(Pw_m);
+                                        var γw_avg = 0.5 * (γw_m + γw_well);
+                                        var DΦw = Pw_m - pwell - γw_avg * dz;
+                                        var WIw = mgrid.WI * (mgrid.Krw(1) / (μw_m * Bw_m));
+                                        var rate_water = WIw * DΦw;
+                                        Res[row_w] += rate_water.Value * dt;
 
-                                    JacValues[wOff.Rm_dPwell[p][1]] += rate_water.Derivative[0] * dt;
 
-                                    var cOff = mgrid.Offset;
-                                    JacValues[cOff.Diag[2]] += rate_water.Derivative[2] * dt;
-                                    JacValues[cOff.Diag[3]] += rate_water.Derivative[3] * dt;
+                                        // Reservoir water equation (injection is inflow: rate * dt)
+                                        JacValues[wOff.Rm_dPwell[p][1]] += rate_water.Derivative[0] * dt;
 
-                                    JacValues[wOff.RowFlow_dGrid[p][0]] -= rate_water.Derivative[2] * dt;
-                                    JacValues[wOff.RowFlow_dGrid[p][1]] -= rate_water.Derivative[3] * dt;
+                                        var cOff = mgrid.Offset;
+                                        JacValues[cOff.Diag[3]] += rate_water.Derivative[3] * dt;
+                                        JacValues[cOff.Diag[4]] += rate_water.Derivative[4] * dt;
+                                        JacValues[cOff.Diag[5]] += rate_water.Derivative[5] * dt;
 
-                                    well.Qw += rate_water;
+                                        JacValues[wOff.RowFlow_dGrid[p][0]] -= rate_water.Derivative[3] * dt;
+                                        JacValues[wOff.RowFlow_dGrid[p][1]] -= rate_water.Derivative[4] * dt;
+                                        JacValues[wOff.RowFlow_dGrid[p][2]] -= rate_water.Derivative[5] * dt;
+
+                                        well.Qw += rate_water;
+                                    }
+                                    if (isGasTarget)
+                                    {
+                                        var Bg_m = mgrid.Bg(Pg_m);
+                                        var μg_m = mgrid.μg(Pg_m);
+                                        var γg_well = mgrid.γw(pwell);
+                                        var γg_m = mgrid.γw(Pw_m);
+                                        var γg_avg = 0.5 * (γg_m + γg_well);
+                                        var DΦg = Pw_m - pwell - γg_avg * dz;
+                                        var WIg = mgrid.WI * (mgrid.Krg(1) / (μg_m * Bg_m));
+                                        var rate_gas = WIg * DΦg;
+                                        Res[row_g] += rate_gas.Value * dt;
+
+                                        JacValues[wOff.Rm_dPwell[p][2]] += rate_gas.Derivative[0] * dt;
+
+                                        var cOff = mgrid.Offset;
+                                        JacValues[cOff.Diag[6]] += rate_gas.Derivative[3] * dt;
+                                        JacValues[cOff.Diag[7]] += rate_gas.Derivative[4] * dt;
+                                        JacValues[cOff.Diag[8]] += rate_gas.Derivative[5] * dt;
+
+                                        JacValues[wOff.RowFlow_dGrid[p][0]] -= rate_gas.Derivative[3] * dt;
+                                        JacValues[wOff.RowFlow_dGrid[p][1]] -= rate_gas.Derivative[4] * dt;
+                                        JacValues[wOff.RowFlow_dGrid[p][2]] -= rate_gas.Derivative[5] * dt;
+
+
+                                        well.Qg += rate_gas;
+                                    }
                                 }
 
                                 // Close Row Q using well.Qw
-                                ADiff<Vector4d> FlowRes = (qwell - well.Qw) * dt;
+                                var FlowRes = (qwell - well.Qw) * dt;
                                 Res[rowflow] += FlowRes.Value;
                                 JacValues[wOff.RowFlow_dPwell] += FlowRes.Derivative[0];
                                 JacValues[wOff.RowFlow_dQwell] += FlowRes.Derivative[1];
@@ -814,9 +908,10 @@ namespace ReservoirSimulator
                     well.Qw_np1 = well.Qw.Value;
                     well.Qo_np1 = well.Qo.Value;
                     well.Ql_np1 = well.Ql.Value;
+                    well.Qg_np1 = well.Qg.Value;
                     well.Pwf_np1 = pwell.Value;
                     // Close the Well Constraint Equation (Row p)
-                    ADiff<Vector4d> wellConstraint = well.Constraint(pwell, qwell);
+                    var wellConstraint = well.Constraint(pwell, qwell);
                     Res[rowconst] += wellConstraint.Value;
                     JacValues[wOff.RowConst_dPwell] += wellConstraint.Derivative[0];
                     JacValues[wOff.RowConst_dQwell] += wellConstraint.Derivative[1];
@@ -837,9 +932,11 @@ namespace ReservoirSimulator
                     int i = grid.ActiveIndex;
                     double cnvOil = Abs(Res[2 * i + 0]) * grid.Bo_np1 * grid.InvPoreVolume;
                     double cnvWater = Abs(Res[2 * i + 1]) * grid.Bw_np1 * grid.InvPoreVolume;
+                    double cnvGas = Abs(Res[2 * i + 2]) * grid.Bg_np1 * grid.InvPoreVolume;
 
                     if (cnvOil > MaxCNV) MaxCNV = cnvOil;
                     if (cnvWater > MaxCNV) MaxCNV = cnvWater;
+                    if (cnvGas > MaxCNV) MaxCNV = cnvGas;
                 }
 
                 // If you also have explicit well BHP equations at rows [2*NumActiveGrids .. totalRows-1]:
