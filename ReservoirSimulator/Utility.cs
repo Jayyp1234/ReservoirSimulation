@@ -9,7 +9,7 @@ namespace ReservoirSimulator
     internal class Utility
     {
 
-        const double alpha = 1.12712e-3, beta = 5.615;
+        const double alpha = 1.12712e-3;
 
         // Key: Quantity Name
         // Value: string[4] -> [0] = FIELD, [1] = METRIC, [2] = PVT-M, [3] = LAB
@@ -268,6 +268,30 @@ namespace ReservoirSimulator
             return table;
         }
 
+        internal static List<PressureDepthPair> IntegrateLegRK4(double zStart, double pStart, double zEnd, int N, 
+            Func<double, double, double> getGradient, Func<double, double> RsRv_D)
+        {
+            if (N <= 0 || zStart == zEnd)
+                return [new PressureDepthPair(zStart, pStart), new PressureDepthPair(zEnd, pStart)];
+            Func<double, double, double> gradientFunc = (h, p) => getGradient(p, RsRv_D(h));
+            var table = new List<PressureDepthPair>();
+            double currentZ = zStart;
+            double currentP = pStart;
+            double h = (zEnd - zStart) / N;
+            table.Add(new(currentZ, currentP));
+            for (int n = 0; n < N; n++)
+            {
+                double k1 = gradientFunc(currentZ, currentP);
+                double k2 = gradientFunc(currentZ + 0.5 * h, currentP + 0.5 * h * k1);
+                double k3 = gradientFunc(currentZ + 0.5 * h, currentP + 0.5 * h * k2);
+                double k4 = gradientFunc(currentZ + h, currentP + h * k3);
+                currentP += (h / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+                currentZ += h;
+                table.Add(new(currentZ, currentP));
+            }
+            return table;
+        }
+
         internal static double Interpolate<T>(List<T> rows, double targetValue, Func<T, double> searchSelector, Func<T, double> targetSelector)
         {
             if (rows == null)
@@ -350,91 +374,6 @@ namespace ReservoirSimulator
             return numActiveGrids;
         }
 
-        public static void SetPVDO<T>(Grid<T>[] Grids, List<int> Pvtnum, PVDOAnalysis[] pvdo, double γo0) where T : struct, IVectorND<T>
-        {
-            foreach (var grid in Grids)
-            {
-                if (!grid.isActive) continue;
-                int n = Pvtnum[grid.GlobalIndex];   
-                grid.Bo = Po => pvdo[n].Result.EvaluateBo(Po);
-                grid.μo = Po => pvdo[n].Result.EvaluateMuo(Po);
-                grid.γo = Po => γo0 / pvdo[n].Result.EvaluateBo(Po);
-            }
-        }
-
-        public static void SetPVDG<T>(Grid<T>[] Grids, List<int> Pvtnum, PVDGAnalysis[] pvdg, double γg0) where T : struct, IVectorND<T>
-        {
-            foreach (var grid in Grids)
-            {
-                if (!grid.isActive) continue;
-                int n = Pvtnum[grid.GlobalIndex];
-                grid.Bg = Pg => pvdg[n].Result.EvaluateBg(Pg);
-                grid.μg = Pg => pvdg[n].Result.EvaluateMug(Pg);
-                grid.γg = Pg => γg0 / pvdg[n].Result.EvaluateBg(Pg);
-            }
-        }
-
-        public static void SetPVTO<T>(Grid<T>[] Grids, List<int> Pvtnum, PVTOAnalysis[] pvto, double γo0, double γg0) where T : struct, IVectorND<T>
-        {
-            foreach (var grid in Grids)
-            {
-                //if (!grid.isActive) continue;
-                //int n = Pvtnum[grid.GlobalIndex];
-                //grid.Rs = Po => pvto[n].Result.EvaluateRs(Po);
-                //grid.Bo = Rs => pvto[n].Result.EvaluateBo(Rs);
-                //grid.μo = Rs => pvto[n].Result.EvaluateMuo(Rs);
-                //grid.γo = Rs => (γo0 + 0.178 * Rs * γg0) / pvto[n].Result.EvaluateBo(Rs);
-            }
-        }
-
-        public static void SetPVTG<T>(Grid<T>[] Grids, List<int> Pvtnum, PVTGAnalysis[] pvtg, double γo0, double γg0) where T : struct, IVectorND<T>
-        {
-            foreach (var grid in Grids)
-            {
-                if (!grid.isActive) continue;
-                int n = Pvtnum[grid.GlobalIndex];
-                grid.Rv = Pg => pvtg[n].Result.EvaluateRv(Pg);
-                grid.Bg = Rv => pvtg[n].Result.EvaluateBg(Rv);
-                grid.μg = Rv => pvtg[n].Result.EvaluateMug(Rv);
-                grid.γg = Rv => (γg0 + 5.615 * Rv * γo0) / pvtg[n].Result.EvaluateBg(Rv);
-            }
-        }
-
-        public static void SetPVTW<T>(Grid<T>[] Grids, List<int> Pvtnum, PVTWAnalysis[] pvtw, double γw0) where T : struct, IVectorND<T>
-        {
-            foreach (var grid in Grids)
-            {
-                if (!grid.isActive) continue;
-                int n = Pvtnum[grid.GlobalIndex];
-                grid.Bw = Pw => pvtw[n].Result.EvaluateBw(Pw);
-                grid.μw = Pw => pvtw[n].Result.EvaluateMuw(Pw);
-                grid.γw = Pw => γw0 / pvtw[n].Result.EvaluateBw(Pw);
-            }
-        }
-
-        public static void SetSWOF<T>(Grid<T>[] Grids, List<int> Satnum, SWOFAnalysis[] swof) where T : struct, IVectorND<T>
-        {
-            foreach (var grid in Grids)
-            {
-                if (!grid.isActive) continue;
-                int n = Satnum[grid.GlobalIndex];   
-                grid.Krw = Sw => swof[n].Result.EvaluateKrw(Sw);
-                grid.Krow = Sw => swof[n].Result.EvaluateKrow(Sw);
-                grid.Pcow = Sw => swof[n].Result.EvaluatePcow(Sw);
-            }
-        }
-
-        public static void SetSGOF<T>(Grid<T>[] Grids, List<int> Satnum, SGOFAnalysis[] sgof) where T : struct, IVectorND<T>
-        {
-            foreach (var grid in Grids)
-            {
-                if (!grid.isActive) continue;
-                int n = Satnum[grid.GlobalIndex];
-                grid.Krg = Sg => sgof[n].Result.EvaluateKrg(Sg);
-                grid.Krog = Sg => sgof[n].Result.EvaluateKrog(Sg);
-                grid.Pcog = Sg => sgof[n].Result.EvaluatePcog(Sg);
-            }
-        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static ADiff<T> SmoothUpstream<T>(ADiff<T> dPhi, ADiff<T> mob_i, ADiff<T> mob_j, double eps = 1e-2) where T : struct, IVectorND<T>

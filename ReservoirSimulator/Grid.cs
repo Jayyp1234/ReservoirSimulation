@@ -1,5 +1,7 @@
-﻿using System.Numerics;
-using SepalSolver;
+﻿using SepalSolver;
+using System.Runtime.Intrinsics.Arm;
+using Typography.OpenFont.Tables;
+using static ReservoirSimulator.Math;
 
 namespace ReservoirSimulator
 {
@@ -11,7 +13,7 @@ namespace ReservoirSimulator
         const double alpha = 1.127e-3, beta = 5.615;
         public bool LogResult { get; set; }
         public bool isActive { get { return ActiveIndex >= 0; } }
-        public bool GasIsDIssolved { get; set; } = false;
+        public bool GasIsDissolved { get; set; } = false;
         public bool OilIsVaporised { get; set; } = false;
         public double NTG { get; set; }
         public double Porosity { get; set; } = 0;
@@ -20,10 +22,118 @@ namespace ReservoirSimulator
         public double PoreVolume { get; private set; } = 0;
         public double InvPoreVolume { get; private set; } = 0;
 
-        public double Po_n, Pw_n, Pg_n, Sw_n, So_n, Sg_n, Pb_n, Pd_n, ErSo_Bo_n, ErSw_Bw_n, ErSg_Bg_n, WI;
+        public SWOFAnalysis SWOF 
+        { 
+            get => swof;
+            set 
+            { 
+                swof = value;
+                Krw = Sw => swof.Result.EvaluateKrw(Sw);
+                Krow = Sw => swof.Result.EvaluateKrow(Sw);
+                Pcow = Sw => swof.Result.EvaluatePcow(Sw);
+            }
+        }
+        public SGOFAnalysis SGOF 
+        { 
+            get => sgof; 
+            set 
+            { 
+                sgof = value;
+                Krg = Sg => sgof.Result.EvaluateKrg(Sg);
+                Krog = Sg => sgof.Result.EvaluateKrog(Sg);
+                Pcog = Sg => sgof.Result.EvaluatePcog(Sg);
+            } 
+        }
+        public SWGFAnalysis SWGF 
+        { 
+            get => swgf;
+            set
+            { 
+                swgf = value;
+                Krw = Sw => swgf.Result.EvaluateKrw(Sw);
+                Krg = Sw => swgf.Result.EvaluateKrg(Sw);
+                Pcgw = Sg => swgf.Result.EvaluatePcgw(Sg);
+            } 
+        }
+        public PVTWAnalysis PVTW 
+        { 
+            get => pvtw;  
+            set 
+            { 
+                pvtw = value;
+                Bw = Pw => pvtw.Result.EvaluateBw(Pw);
+                μw = Pw => pvtw.Result.EvaluateMuw(Pw);
+                γw = Pw => γw0 / pvtw.Result.EvaluateBw(Pw);
+            }
+        }
+        public PVDOAnalysis PVDO 
+        { 
+            get => pvdo;
+            set
+            { 
+                pvdo = value;
+                Bo = Po => pvdo.Result.EvaluateBo(Po);
+                μo = Po => pvdo.Result.EvaluateMuo(Po);
+                γo = Po => γo0 / pvdo.Result.EvaluateBo(Po);
+            }
+        }
+        public PVDGAnalysis PVDG 
+        { 
+            get => pvdg;
+            set 
+            { 
+                pvdg = value;
+                Bg = Po => pvdg.Result.EvaluateBg(Po);
+                μg = Po => pvdg.Result.EvaluateMug(Po);
+                γg = Po => γg0 / pvdg.Result.EvaluateBg(Po);
+            } 
+        }
+        public PVTOAnalysis PVTO
+        {
+            get => pvto;
+            set
+            {
+                pvto = value;
+                Rs = Po => pvto.Result.EvaluateRs(Po);
+            }
+        }
+        public PVTGAnalysis PVTG { get { return pvtg; } set { pvtg = value; } }
+        public RSVDAnalysis RSVD 
+        {
+            get => rsvd;
+            set 
+            { 
+                rsvd = value; 
+                Rsvd = h => rsvd.Result.EvaluateRs(h);
+            } 
+        }
+        public RVVDAnalysis RVVD 
+        { 
+            get => rvvd;
+            set 
+            { 
+                rvvd = value;
+                Rvvd = h => rvvd.Result.EvaluateRv(h);
+            } 
+        }
+
+        SWOFAnalysis swof;
+        SGOFAnalysis sgof;
+        SWGFAnalysis swgf;
+        PVTWAnalysis pvtw;
+        PVDOAnalysis pvdo;
+        PVDGAnalysis pvdg;
+        PVTOAnalysis pvto;
+        PVTGAnalysis pvtg;
+        RSVDAnalysis rsvd;
+        RVVDAnalysis rvvd;
+
+
+        public double Po_n, Pw_n, Pg_n, Sw_n, So_n, Sg_n, Pb_n, Pd_n, ErSo_Bo_n, ErSw_Bw_n, ErSg_Bg_n, WI, γo0, γw0, γg0;
         public double Po_np1, Pw_np1, Pg_np1, Sw_np1, So_np1, Sg_np1, Pb_np1, Pd_np1, Bo_np1, Bw_np1, Bg_np1;
         public ADiff<T> ErSo_Bo_np1, ErSw_Bw_np1, ErSg_Bg_np1;
         public Func<ADiff<T>, ADiff<T>> Krw, Krow, Krg, Krog, Pcow, Pcog, Pcgw, Bo, Bw, Bg, μo, μw, μg, γo, γw, γg, Er, Rs, Rv;
+        public Func<double, double> Rsvd, Rvvd;
         
         // Baker's 3-phase relative permeability (smooth everywhere on the Sw-Sg triangle)
         public ADiff<T> Kro(ADiff<T> sw, ADiff<T> sg)
@@ -39,31 +149,50 @@ namespace ReservoirSimulator
 
             return (swEff * krow + sg * krog) / denom;
         }
+        public ADiff<T> γopr(ADiff<T> p, ADiff<T> rs)
+        {
+            return (γo0 + 178.1076 * rs * γg0) / Bopr(p, rs);
+        }
+        public ADiff<T> μopr(ADiff<T> p, ADiff<T> rs)
+        {
+            if (pvto.Result.RsBase <= 0.0)
+                return pvto.Result.ViscBase * Exp(pvto.Result.UndersatViscosibility * Max(0.0, p - 14.7));
+
+            ADiff<T> pb = EvaluateBubblePointPressure(rs);
+            if (p.Value <= pb.Value)
+                return pvto.Result.EvaluateMuo(Rs(p));
+
+            ADiff<T> muSat = pvto.Result.EvaluateMuo(rs);
+            return muSat * Exp(pvto.Result.UndersatViscosibility * (p - pb));
+        }
+        public ADiff<T> Bopr(ADiff<T> p, ADiff<T> rs)
+        {
+            if (pvto.Result.RsBase <= 0.0)
+                return pvto.Result.BoBase * Exp(-pvto.Result.UndersatCompressibility * Max(0.0, p - 14.7));
+
+            ADiff<T> pb = EvaluateBubblePointPressure(rs);
+            if (p.Value <= pb.Value)
+                return EvaluateBo(Rs(p));
+
+            ADiff<T> boSat = EvaluateBo(rs);
+            return boSat * Exp(-pvto.Result.UndersatCompressibility * (p - pb));
+        }
+        ADiff<T> EvaluateBo (ADiff<T> rs)
+        {
+            return pvto.Result.BoBase * Exp(pvto.Result.BoExponent * rs);
+        }
+        public ADiff<T> EvaluateBubblePointPressure(ADiff<T> rs) 
+        {
+            if (rs.Value <= 0.0 || pvto.Result.RsBase <= 0.0)
+                return default;
+
+            return Pow(rs / pvto.Result.RsBase, 1.0 / pvto.Result.RsExponent);
+        }
         public int ActiveIndex { get; set; } = -1;
         public int GlobalIndex { get; set; } = -1;
         public (int i, int j, int k) IJKIndex { get; set; }
         internal Vector3d[] Corners { get; set; } = [];
         internal Vector3d Center { get; set; }
-        internal bool WriteBPR { get; set; } = false;
-        internal bool WriteBPW { get; set; } = false;
-        internal bool WriteBPG { get; set; } = false;
-        internal bool WriteBPB { get; set; } = false;
-        internal bool WriteBPCOW { get; set; } = false;
-        internal bool WriteBPCOG { get; set; } = false;
-        internal bool WriteBPOTO { get; set; } = false;
-        internal bool WriteBPOTW { get; set; } = false;
-        internal bool WriteBPOTG { get; set; } = false;
-        internal bool WriteBWSAT { get; set; } = false;
-        internal bool WriteBGSAT { get; set; } = false;
-        internal bool WriteBOSAT { get; set; } = false;
-        internal bool WriteBRS { get; set; } = false;
-        internal bool WriteBRV { get; set; } = false;
-        internal bool BBO { get; set; } = false;
-        internal bool BBW { get; set; } = false;
-        internal bool BBG { get; set; } = false;
-        internal bool BVISO { get; set; } = false;
-        internal bool BVISW { get; set; } = false;
-        internal bool BVISG { get; set; } = false;
 
 
         public List<double> PO = [], PW = [], PG = [], SW = [], SO = [], SG = [], PB = [], PD = [];

@@ -47,42 +47,15 @@ namespace ReservoirSimulator
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        ADiff<T> EvaluateBo<T>(ADiff<T> rs) where T : struct, IVectorND<T>
+        public ADiff<T> EvaluateBo<T>(ADiff<T> rs) where T : struct, IVectorND<T>
         {
             return BoBase * Exp(BoExponent * rs);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        ADiff<T> EvaluateMuo<T>(ADiff<T> rs) where T : struct, IVectorND<T>
+        public ADiff<T> EvaluateMuo<T>(ADiff<T> rs) where T : struct, IVectorND<T>
         {
             return ViscBase * Exp(-ViscExponent * rs);
-        }
-
-        // 2D Oil Extensions: follows saturated curve for P <= Pbub(Rs), undersaturated exponential for P > Pbub(Rs)
-        public ADiff<T> EvaluateBo<T>(ADiff<T> p, ADiff<T> rs) where T : struct, IVectorND<T>
-        {
-            if (RsBase <= 0.0)
-                return BoBase * Exp(-UndersatCompressibility * Max(0.0, p - 14.7));
-
-            ADiff<T> pb = EvaluateBubblePointPressure(rs);
-            if (p.Value <= pb.Value)
-                return EvaluateBo(EvaluateRs(p));
-
-            ADiff<T> boSat = EvaluateBo(rs);
-            return boSat * Exp(-UndersatCompressibility * (p - pb));
-        }
-
-        public ADiff<T> EvaluateMuo<T>(ADiff<T> p, ADiff<T> rs) where T : struct, IVectorND<T>
-        {
-            if (RsBase <= 0.0)
-                return ViscBase * Exp(UndersatViscosibility * Max(0.0, p - 14.7));
-
-            ADiff<T> pb = EvaluateBubblePointPressure(rs);
-            if (p.Value <= pb.Value)
-                return EvaluateMuo(EvaluateRs(p));
-
-            ADiff<T> muSat = EvaluateMuo(rs);
-            return muSat * Exp(UndersatViscosibility * (p - pb));
         }
     }
 

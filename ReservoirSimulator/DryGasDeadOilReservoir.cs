@@ -7,7 +7,7 @@ using static ReservoirSimulator.ReservoirJacobian;
 
 namespace ReservoirSimulator
 {
-    public class DryGasDeadOilReservoir
+    public class DryGasDeadOilReservoir : IReservoir<Vector6d>
     {
         public int funcall;
         public bool UseUpstreamWeightingForInjection = false;
@@ -43,6 +43,11 @@ namespace ReservoirSimulator
         PVDGAnalysis[] PVDGs;
         SWOFAnalysis[] SWOFs;
         SGOFAnalysis[] SGOFs;
+
+        List<Well<Vector6d>> IReservoir<Vector6d>.WELLS => Wells;
+
+        Grid<Vector6d>[] IReservoir<Vector6d>.GRIDS => Grids;
+
         public DryGasDeadOilReservoir(EclipseDataDeck Data)
         {
             DATA = Data;
@@ -119,11 +124,6 @@ namespace ReservoirSimulator
 
             // REGION
             NumActiveGrids = Utility.SetAcitveGrids(Grids, Data.ActnumArray, Er);
-            Utility.SetSWOF(Grids, Data.SatnumArray, SWOFs);
-            Utility.SetSGOF(Grids, Data.SatnumArray, SGOFs);
-            Utility.SetPVDO(Grids, Data.PvtnumArray, PVDOs, γo0);
-            Utility.SetPVDG(Grids, Data.PvtnumArray, PVDGs, γg0);
-            Utility.SetPVTW(Grids, Data.PvtnumArray, PVTWs, γw0);
 
             // TRANSMISSIBILITY
             Utility.BuildStructuredConnections(Grids, Nx, Ny, Nz);

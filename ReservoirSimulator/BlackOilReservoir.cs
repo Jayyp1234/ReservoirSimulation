@@ -7,7 +7,7 @@ using static ReservoirSimulator.ReservoirJacobian;
 
 namespace ReservoirSimulator
 {
-    public class BlackOilReservoir
+    public class BlackOilReservoir : IReservoir
     {
         public int funcall;
         public bool UseUpstreamWeightingForInjection = false;

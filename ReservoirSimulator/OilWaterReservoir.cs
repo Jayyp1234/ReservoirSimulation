@@ -7,7 +7,7 @@ using static ReservoirSimulator.ReservoirJacobian;
 
 namespace ReservoirSimulator
 {
-    public class OilWaterReservoir
+    public class OilWaterReservoir : IReservoir<Vector4d>
     {
         public int funcall;
         public bool UseUpstreamWeightingForInjection = false;
@@ -38,6 +38,11 @@ namespace ReservoirSimulator
         PVTWAnalysis[] PVTWs;
         PVDOAnalysis[] PVDOs;
         SWOFAnalysis[] SWOFs;
+
+        List<Well<Vector4d>> IReservoir<Vector4d>.Wells => throw new NotImplementedException();
+
+        Grid<Vector4d>[] IReservoir<Vector4d>.Grids => throw new NotImplementedException();
+
         public OilWaterReservoir(EclipseDataDeck Data)
         {
             DATA = Data;
@@ -118,9 +123,6 @@ namespace ReservoirSimulator
 
             // REGION
             NumActiveGrids = Utility.SetAcitveGrids(Grids, actnum, Er);
-            Utility.SetSWOF(Grids, Data.SatnumArray, SWOFs);
-            Utility.SetPVDO(Grids, Data.PvtnumArray, PVDOs, γo0);
-            Utility.SetPVTW(Grids, Data.PvtnumArray, PVTWs, γw0);
 
             // TRANSMISSIBILITY
             Utility.BuildStructuredConnections(Grids, Nx, Ny, Nz);

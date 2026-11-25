@@ -40,7 +40,7 @@ using SepalSolver;
         Console.ResetColor();
     }
 
-    DryGasDeadOilReservoir Reservoir = new(parsedDeck);
+    Reservoir Reservoir = new(parsedDeck);
     tic();
     Reservoir.Initialize();
     Reservoir.Simulate();
@@ -48,14 +48,4 @@ using SepalSolver;
 
     string outputdir = @"C:\Users\lateef.a.kareem\Documents\SimulationResult";
     Reservoir.ExportResults(outputdir);
-    Subplot(3, 1, 0);
-    Plot(Reservoir.Time, Reservoir.Wells[0].QO); HoldOn();
-    Plot(Reservoir.Time, Reservoir.Wells[0].QW);
-    Subplot(3, 1, 1);
-    Plot(Reservoir.Time, Reservoir.Wells[1].QO); HoldOn();
-    Plot(Reservoir.Time, Reservoir.Wells[1].QW);
-    Subplot(3, 1, 2);
-    Plot(Reservoir.Time, Reservoir.Wells[0].PWF); HoldOn();
-    Plot(Reservoir.Time, Reservoir.Wells[1].PWF);
-    SaveAs(@"C:\Users\lateef.a.kareem\Documents\SimulationResult\WellProduction.png");
 }
