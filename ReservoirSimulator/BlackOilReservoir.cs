@@ -717,6 +717,8 @@ namespace ReservoirSimulator
                     bool isOilTarget = well.IsOilTarget;
                     bool isGasTarget = well.IsGasTarget;
                     bool isResTarget = well.IsResTarget;
+                    bool injectsGas = well.CurrentInjectorControl is { } injCtl &&
+                        string.Equals(injCtl.InjectionPhase?.Trim(), "GAS", StringComparison.OrdinalIgnoreCase);
 
                     switch (well.WellType)
                     {
