@@ -129,8 +129,8 @@ namespace ReservoirSimulator
         RVVDAnalysis rvvd;
 
 
-        public double Po_n, Pw_n, Pg_n, Sw_n, So_n, Sg_n, Pb_n, Pd_n, ErSo_Bo_n, ErSw_Bw_n, ErSg_Bg_n, WI, γo0, γw0, γg0;
-        public double Po_np1, Pw_np1, Pg_np1, Sw_np1, So_np1, Sg_np1, Pb_np1, Pd_np1, Bo_np1, Bw_np1, Bg_np1;
+        public double Po_n, Pw_n, Pg_n, Sw_n, So_n, Sg_n, Rs_n, Rv_n, ErSo_Bo_n, ErSw_Bw_n, ErSg_Bg_n, WI, γo0, γw0, γg0;
+        public double Po_np1, Pw_np1, Pg_np1, Sw_np1, So_np1, Sg_np1, Rs_np1, Rv_np1, Bo_np1, Bw_np1, Bg_np1;
         public ADiff<T> ErSo_Bo_np1, ErSw_Bw_np1, ErSg_Bg_np1;
         public Func<ADiff<T>, ADiff<T>> Krw, Krow, Krg, Krog, Pcow, Pcog, Pcgw, Bo, Bw, Bg, μo, μw, μg, γo, γw, γg, Er, Rs, Rv;
         public Func<double, double> Rsvd, Rvvd;

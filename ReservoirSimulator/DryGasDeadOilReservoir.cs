@@ -130,12 +130,12 @@ namespace ReservoirSimulator
             foreach (var grid in ActiveGrids)
             {
                 int satnum = Data.SatnumArray[grid.GlobalIndex];
-                grid.SWOF = SWOFs[satnum - 1];
-                grid.SGOF = SGOFs[satnum - 1];
+                grid.SWOF = SWOFs[satnum];
+                grid.SGOF = SGOFs[satnum];
                 int pvtnum = Data.PvtnumArray[grid.GlobalIndex];
-                grid.PVTW = PVTWs[pvtnum - 1];
-                grid.PVDG = PVDGs[pvtnum - 1];
-                grid.PVDO = PVDOs[pvtnum - 1];
+                grid.PVTW = PVTWs[pvtnum];
+                grid.PVDG = PVDGs[pvtnum];
+                grid.PVDO = PVDOs[pvtnum];
             }
 
             // TRANSMISSIBILITY
