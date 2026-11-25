@@ -2,8 +2,6 @@
 using SepalSolver;
 using System.Runtime.CompilerServices;
 using static ReservoirSimulator.Math;
-using UnitSystem.Parsing;
-using UnitSystem.Registry;
 using UnitSystem.Services;
 
 namespace ReservoirSimulator

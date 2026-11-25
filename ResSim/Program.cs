@@ -6,7 +6,7 @@ using SepalSolver;
 {
     // 1. Define the path to your master ECLIPSE file (.DATA or .GRDECL)
     // If testing with the Norne deck, point it to your local file path
-    string masterDeckPath = @"C:\Users\lateef.a.kareem\Downloads\opm-data-master\opm-data-master\norne\NORNE_ATW2013.DATA";
+    string masterDeckPath = @"C:\Users\lateef.a.kareem\Documents\New folder\SPE1CASE1.DATA";
 
     Console.WriteLine("==================================================");
     Console.WriteLine("        LAUNCHING ECLIPSE INGESTION PIPELINE     ");
@@ -42,7 +42,7 @@ using SepalSolver;
         Console.ResetColor();
     }
 
-    BlackOilReservoir Reservoir = new(parsedDeck);
+    OilWaterReservoir Reservoir = new(parsedDeck);
     tic();
     Reservoir.Initialize();
     Reservoir.Simulate();

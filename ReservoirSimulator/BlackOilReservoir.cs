@@ -81,8 +81,8 @@ namespace ReservoirSimulator
             // NTG and MULTPV default to 1 for every cell (set at DIMENS); a wrong-sized array is ignored rather than misread
             double[]? ntg = Data.NtgArray.Count == Ngrids ? Data.NtgArray.ToArray() : null;
             double[]? multpv = Data.MultpvArray.Count == Ngrids ? Data.MultpvArray.ToArray() : null;
-            Grids = Zcorn is not null ? Utility.ProcessGrid<Vector6d>(Nx, Ny, Nz, Coord, Zcorn, Φ, Kx, Ky, Kz) :
-                Utility.ProcessGrid<Vector6d>(Nx, Ny, Nz, Dx, Dy, Dz, zTop, Φ, Kx, Ky, Kz);
+            Grids = Zcorn is not null ? Utility.ProcessGrid<Vector6d>(Nx, Ny, Nz, Coord, Zcorn, Φ, Kx, Ky, Kz, ntg, multpv) :
+                Utility.ProcessGrid<Vector6d>(Nx, Ny, Nz, Dx, Dy, Dz, zTop, Φ, Kx, Ky, Kz, ntg, multpv);
 
             // Process PVTW, PVDO, and PVDG tables.
             PVTWs = [.. Data.RawPvtwTables.Select(pvtw => new PVTWAnalysis(pvtw, incomingUnit))];
@@ -846,15 +846,15 @@ namespace ReservoirSimulator
                                     var γg_m = mgrid.γg(Pg_m);
                                     var γw_m = mgrid.γw(Pw_m);
 
-                                    var lambdaTotal = (Krw_m / μw_m + Kro_m / μo_m + Krg_m / μg_m) / Bw_m;
+                                    var lambdaTotal = Krw_m / μw_m + Kro_m / μo_m + Krg_m / μg_m ;
                                     if (isWaterTarget)
                                     {
                                         var γw_well = mgrid.γw(pwell);
                                         var γw_avg = 0.5 * (γw_m + γw_well);
                                         var DΦw = Pw_m - pwell - γw_avg * dz;
                                         if (UseUpstreamWeightingForInjection)
-                                            lambdaTotal = mgrid.Krw(1) / (μw_m * Bw_m);
-                                        var WIw = mgrid.WI * lambdaTotal;
+                                            lambdaTotal = mgrid.Krw(1) / μw_m;
+                                        var WIw = mgrid.WI * lambdaTotal / Bw_m;
                                         var rate_water = WIw * DΦw; well.Qw += rate_water;
 
                                         // Reservoir water equation (injection is inflow: rate * dt)
@@ -883,8 +883,8 @@ namespace ReservoirSimulator
                                         var γg_avg = 0.5 * (γg_m + γg_well);
                                         var DΦg = Pg_m - pwell - γg_avg * dz;
                                         if (UseUpstreamWeightingForInjection)
-                                            lambdaTotal = mgrid.Krg(1) / (μg_m * Bg_m);
-                                        var WIg = mgrid.WI * lambdaTotal;
+                                            lambdaTotal = mgrid.Krg(1) / μg_m;
+                                        var WIg = mgrid.WI * lambdaTotal / Bg_m;
                                         var rate_gas = WIg * DΦg; well.Qg += rate_gas;
                                         Res[row_g] += rate_gas.Value * dt;
 
