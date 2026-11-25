@@ -75,10 +75,8 @@ namespace EclipseDeckReader
         // 12. Dynamic Timeline Synchronization State
 
         // 12. Dynamic Timeline Synchronization State
-        // Day 0. Without START, ECLIPSE starts on 1 JAN 1983; both dates start there so schedule records read before the
-        // first TSTEP/DATES are dated day 0 (before, CurrentSimDate began at DateTime.Now and those wells never opened).
-        public DateTime StartDate { get; set; } = new(1983, 1, 1);
-        public DateTime CurrentSimDate { get; set; } = new(1983, 1, 1);  // Tracks active day as scheduler advances
+        public DateTime StartDate { get; set; }                       // Master baseline anchor point (Day 0)
+        public DateTime CurrentSimDate { get; set; } = DateTime.Now;  // Tracks active day as scheduler advances
         public List<double> TimeSteps { get; } = [];                  // Explicit dt durations (in days) from TSTEP & DATES
         public List<DateTime> ReportDates { get; } = [];              // Cumulative target dates for each report step
     }

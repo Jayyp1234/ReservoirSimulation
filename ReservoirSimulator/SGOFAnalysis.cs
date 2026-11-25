@@ -9,7 +9,7 @@ namespace ReservoirSimulator
                                           double pcRSquared, double krgRSquared, double krogRSquared,
                                           double sgMin, double sgMax, double pcMin, double pcMax, double sgKrgEnd)
     {
-        public readonly double Sgc = sgc;                      // Critical Gas Saturation (largest Sg with Krg = 0)
+        public readonly double Sgc = sgc;                      // Critical Gas Saturation
         public readonly double Sorg = sorg;                    // Residual Oil to Gas
         public readonly double Swi = swi;                      // Connate Water background parameter
         public readonly double KrgEndpoint = krgEndpoint;      // Largest Krg of the table
@@ -26,14 +26,12 @@ namespace ReservoirSimulator
         public double KrgRSquared { get; } = krgRSquared;
         public double KrogRSquared { get; } = krogRSquared;
 
-        public double SgMin { get; } = sgMin;                  // first and last Sg of the table
+        public double SgMin { get; } = sgMin;
         public double SgMax { get; } = sgMax;
-        public double PcMin { get; } = pcMin;                  // smallest and largest Pcog of the table
+        public double PcMin { get; } = pcMin;
         public double PcMax { get; } = pcMax;
 
-        // Each curve over its own range, clamped at its ends. Before, Krg and Krog both used (Sg - Sgc) / (1 - Swi -
-        // Sorg - Sgc) with no clamping, so Krog exceeded its end point at Sg < Sgc and a Sg below Sgc took a negative
-        // number to a fractional power (NaN).
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluateKrg<T>(ADiff<T> sg) where T : struct, IVectorND<T>
         {
@@ -49,23 +47,16 @@ namespace ReservoirSimulator
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluateKrog<T>(ADiff<T> sg) where T : struct, IVectorND<T>
         {
-            // Oil (at connate water) flows from So = 1 - Swi (Sg = 0) down to its residual Sorg
-            ADiff<T> soNorm = (1.0 - Swi - Sorg - sg) / (1.0 - Swi - Sorg);
-            if (soNorm.Value <= 0.0) return default;
-            if (soNorm.Value >= 1.0) return new ADiff<T>(KrogEndpoint, default);
-            return KrogEndpoint * Pow(soNorm, Nog);
+            ADiff<T> sgNorm = (sg - Sgc) / (1.0 - Swi - Sorg - Sgc);
+            return KrogEndpoint * Pow(1.0 - sgNorm, Nog);
         }
 
-        // Pcog grows with Sg and is singular at Sg = 1 - Swi; it is kept at or below the table's largest Pcog. A table
-        // with no positive Pcog has Pdgo = 0, so Pcog = 0 (before, Sg near 1 - Swi gave an infinite Pcog and NaN pressures).
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluatePcog<T>(ADiff<T> sg) where T : struct, IVectorND<T>
         {
-            if (Pdgo <= 0.0 || PcMax <= 0.0) return default;
+            // Gas-oil capillary expansion operates via scaled gas track projection
             ADiff<T> sgStar = sg / (1.0 - Swi);
-            if (sgStar.Value >= 1.0 - 1e-6) return new ADiff<T>(PcMax, default);
-            var pc = Pdgo * Pow(1.0 - sgStar, -InvLambdaGo);
-            return pc.Value > PcMax ? new ADiff<T>(PcMax, default) : pc;
+            return Pdgo * Pow(1.0 - sgStar, -InvLambdaGo);
         }
     }
 
@@ -91,19 +82,17 @@ namespace ReservoirSimulator
             var sorted = sgofTable.OrderBy(r => r.Sg).ToList();
 
             // 1. Resolve Gas Endpoints
-            // Critical gas saturation: the last Sg before Krg becomes positive (gas is immobile below it)
-            var firstMobileGas = sorted.FindIndex(r => r.Krg > 0.0);
-            double sgc = firstMobileGas > 0 ? sorted[firstMobileGas - 1].Sg : sorted.First().Sg;
-            double sgLast = sorted.Last().Sg;
+            double sgc = sorted.First().Sg; // Critical gas initialization entry
             double krogEndpoint = sorted.First().Krog; // Krog at Sg = 0
             // Krg end point: the table's largest Krg, and the first Sg at which it is reached (rows after that repeat it)
             double krgEndpoint = sorted.Max(r => r.Krg);
             double sgKrgEnd = sorted.First(r => r.Krg >= krgEndpoint * (1.0 - 1e-9)).Sg;
             if (sgKrgEnd <= sgc) sgKrgEnd = sgLast;    // Krg is 0 everywhere: keep a valid range
 
-            // Residual oil to gas: Krog reaches 0 at Sg = 1 - Swi - Sorg (first such row)
             var activeGasLimit = sorted.FirstOrDefault(r => r.Krog <= 0.0) ?? sorted.Last();
-            double sorg = Max(0.0, 1.0 - fixedSwi - activeGasLimit.Sg);
+            double sgMax = activeGasLimit.Sg;
+            double sorg = 1.0 - fixedSwi - sgMax;
+            double krgEndpoint = activeGasLimit.Krg;
 
             List<double> pcX = []; List<double> pcY = [];
             List<double> krgX = []; List<double> krgY = [];
@@ -111,7 +100,7 @@ namespace ReservoirSimulator
 
             foreach (var row in sorted)
             {
-                if (row.Pcg > 0 && row.Sg < 1.0 - fixedSwi)
+                if (row.Sg > sgc && row.Pcg > 0)
                 {
                     double sgStar = row.Sg / (1.0 - fixedSwi);
                     pcX.Add(Log(1.0 - sgStar));
@@ -127,8 +116,17 @@ namespace ReservoirSimulator
                 double so = 1.0 - fixedSwi - row.Sg;
                 if (row.Sg > 0 && so > sorg && row.Krog > 0 && row.Sg < activeGasLimit.Sg)
                 {
-                    krogX.Add(Log((so - sorg) / (1.0 - fixedSwi - sorg)));
-                    krogY.Add(Log(row.Krog));
+                    double sgNorm = (row.Sg - sgc) / (1.0 - fixedSwi - sorg - sgc);
+                    if (row.Krg > 0)
+                    {
+                        krgX.Add(Log(sgNorm));
+                        krgY.Add(Log(row.Krg));
+                    }
+                    if (row.Krog > 0)
+                    {
+                        krogX.Add(Log(1.0 - sgNorm));
+                        krogY.Add(Log(row.Krog));
+                    }
                 }
             }
 
@@ -139,9 +137,8 @@ namespace ReservoirSimulator
 
             double lambdaGo = -1.0 / mPc;
             double pdgo = Exp(bPc);
-            if (pcX.Count < 2) { pdgo = 0.0; lambdaGo = 1.0; }   // fewer than 2 positive Pcog rows: no capillary pressure
 
-            Result = new(sgc, sorg, fixedSwi, krgEndpoint, krogEndpoint,
+            Result = new(sgc, sorg, fixedSwi, krgEndpoint, krogEndpoint, 
                 ng, nog, pdgo, lambdaGo, rSqPc, rSqG, rSqOg,
                 sorted.First().Sg, sgLast, sorted.Min(r => r.Pcg), sorted.Max(r => r.Pcg), sgKrgEnd);
         }

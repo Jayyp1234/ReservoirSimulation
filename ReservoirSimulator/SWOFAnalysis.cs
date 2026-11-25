@@ -72,30 +72,20 @@ namespace ReservoirSimulator
             return KroEndpoint * Pow(soNorm, No);
         }
 
-        // Brooks-Corey Pc, never above the table's largest Pc (PcMax). Near Swi the fitted curve rises without limit
-        // (thousands of psi where the table says a few), which put the starting state out of equilibrium. A table with
-        // no positive Pc has Pd = 0, so Pc = 0 everywhere (before, the empty fit gave Pc rising from 0 to 1 psi).
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluatePcow<T>(ADiff<T> sw) where T : struct, IVectorND<T>
         {
-            if (Pd <= 0.0 || PcMax <= 0.0)
-                return default;
-
             const double eps = 1e-4;
             double denom = 1.0 - Swi;
             ADiff<T> swStar = (sw - Swi) / denom;
 
-            ADiff<T> pc;
             if (swStar.Value >= eps)
-                pc = Pd * Pow(swStar, -InvLambda);
-            else
-            {
-                // C1-continuous linear extension for swStar < eps (prevents NaN/Inf at sw <= Swi)
-                double pcAtEps = Pd * Pow(eps, -InvLambda);
-                double dPcDswStarAtEps = -Pd * InvLambda * Pow(eps, -InvLambda - 1.0);
-                pc = pcAtEps + dPcDswStarAtEps * (swStar - eps);
-            }
-            return pc.Value > PcMax ? new ADiff<T>(PcMax, default) : pc;
+                return Pd * Pow(swStar, -InvLambda);
+
+            // C1-continuous linear extension for swStar < eps (prevents NaN/Inf at sw <= Swi)
+            double pcAtEps = Pd * Pow(eps, -InvLambda);
+            double dPcDswStarAtEps = -Pd * InvLambda * Pow(eps, -InvLambda - 1.0);
+            return pcAtEps + dPcDswStarAtEps * (swStar - eps);
         }
     }
 
@@ -124,7 +114,6 @@ namespace ReservoirSimulator
             double swi = sorted.First().Sw;
             double kroEndpoint = sorted.First().Krow;
 
-            // Residual oil: Krow reaches 0 at Sw = 1 - Sor (first such row); the last row's Sw when Krow never reaches 0
             var sorRow = sorted.FirstOrDefault(r => r.Krow <= 0.0) ?? sorted.Last();
             double swMin = sorted.First().Sw;
             double swMax = sorted.Last().Sw;
@@ -160,20 +149,27 @@ namespace ReservoirSimulator
                 }
                 if (row.Sw > swi && row.Sw < 1.0 - sor && row.Krow > 0)
                 {
-                    kroX.Add(Log((1.0 - row.Sw - sor) / (1.0 - swi - sor)));
-                    kroY.Add(Log(row.Krow));
+                    double swNorm = (row.Sw - swi) / (1.0 - swi - sor);
+                    if (row.Krw > 0)
+                    {
+                        krwX.Add(Log(swNorm));
+                        krwY.Add(Log(row.Krw));
+                    }
+                    if (row.Krow > 0)
+                    {
+                        kroX.Add(Log(1.0 - swNorm));
+                        kroY.Add(Log(row.Krow));
+                    }
                 }
             }
 
-            // 3. Execute Least-Squares Regressions. The slopes are the Corey exponents; the curves are
-            // endpoint × (normalised saturation)^n, so they pass through the table's end points
+            // 3. Execute Least-Squares Regressions
             var (mPc, bPc, rSqPc) = Utility.LinearRegression(pcX, pcY);
             var (nw, _, rSqW) = Utility.LinearRegression(krwX, krwY);
             var (no, _, rSqO) = Utility.LinearRegression(kroX, kroY);
 
             double lambda = -1.0 / mPc;
             double pd = Exp(bPc);
-            if (pcX.Count < 2) { pd = 0.0; lambda = 1.0; }   // fewer than 2 positive Pc rows: no capillary pressure
 
 
 
