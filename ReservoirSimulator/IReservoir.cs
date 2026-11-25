@@ -5,12 +5,15 @@ using System.Text;
 
 namespace ReservoirSimulator
 {
-    internal interface IReservoir<T> where T : struct, IVectorND<T>
+    public interface IReservoir
     {
-        public List<Well<T>> WELLS { get; }
-        public Grid<T>[] GRIDS { get; }
-        public void Initialize();
-        public void Simulate(double[] ResultTime = null);
-        public void ExportResults(string outputDir);
+        bool UseUpstreamWeightingForInjection { get; set; }
+        void Initialize();
+        void Simulate(double[] ResultTime = null);
+        void ExportResults(string outputDir);
+    }
+
+    public interface IReservoir<T> : IReservoir where T : struct, IVectorND<T>
+    {
     }
 }

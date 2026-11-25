@@ -6,6 +6,12 @@ namespace ReservoirSimulator
 {
     internal class WetGasDeadOilReservoir:IReservoir
     {
+        public bool UseUpstreamWeightingForInjection
+        {
+            get => useUpstreamweighting;
+            set => useUpstreamweighting = value;
+        }
+        bool useUpstreamweighting = false;
         public void Initialize()
         {
             // Initialization logic for DryGasWaterReservoir

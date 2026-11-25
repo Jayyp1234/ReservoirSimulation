@@ -356,7 +356,7 @@ namespace ReservoirSimulator
             return yLeft + fraction * (yRight - yLeft);
         }
 
-        public static int SetAcitveGrids<T>(Grid<T>[] Grids, List<int> Actnum, Func<ADiff<T>, ADiff<T>> Er) where T : struct, IVectorND<T>
+        public static int SetActiveGrids<T>(Grid<T>[] Grids, List<int> Actnum, Func<ADiff<T>, ADiff<T>> Er) where T : struct, IVectorND<T>
         {
             int numActiveGrids = 0;
             for (int m = 0; m < Grids.Length; m++)

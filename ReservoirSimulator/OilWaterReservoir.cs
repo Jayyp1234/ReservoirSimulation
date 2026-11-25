@@ -31,6 +31,7 @@ namespace ReservoirSimulator
         double[] Coord, Zcorn;
         readonly double Prefr, cr, γo0, γw0;
         Grid<Vector4d>[] Grids;
+        List<Grid<Vector4d>> ActiveGrids;
         public List<Well<Vector4d>> Wells;
         Aquifer Aquifer;
         Dictionary<(int, int), EQUILPressureDepth> EquilPVTCombinations = [];
@@ -39,9 +40,11 @@ namespace ReservoirSimulator
         PVDOAnalysis[] PVDOs;
         SWOFAnalysis[] SWOFs;
 
-        List<Well<Vector4d>> IReservoir<Vector4d>.Wells => throw new NotImplementedException();
+        public List<Well<Vector4d>> WELLS => Wells;
 
-        Grid<Vector4d>[] IReservoir<Vector4d>.Grids => throw new NotImplementedException();
+        public Grid<Vector4d>[] GRIDS => Grids;
+
+        bool IReservoir.UseUpstreamWeightingForInjection { get => throw new NotImplementedException(); set => throw new NotImplementedException(); }
 
         public OilWaterReservoir(EclipseDataDeck Data)
         {
@@ -122,7 +125,16 @@ namespace ReservoirSimulator
             }
 
             // REGION
-            NumActiveGrids = Utility.SetAcitveGrids(Grids, actnum, Er);
+            NumActiveGrids = Utility.SetActiveGrids(Grids, actnum, Er);
+            ActiveGrids = [.. Grids.Where(g => g.isActive)];
+            foreach (var grid in ActiveGrids)
+            {
+                int satnum = Data.SatnumArray[grid.GlobalIndex];
+                grid.SWOF = SWOFs[satnum];
+                int pvtnum = Data.PvtnumArray[grid.GlobalIndex];
+                grid.PVTW = PVTWs[pvtnum];
+                grid.PVDO = PVDOs[pvtnum];
+            }
 
             // TRANSMISSIBILITY
             Utility.BuildStructuredConnections(Grids, Nx, Ny, Nz);

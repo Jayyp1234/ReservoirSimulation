@@ -7,10 +7,15 @@ using static ReservoirSimulator.ReservoirJacobian;
 
 namespace ReservoirSimulator
 {
-    public class DryGasDeadOilReservoir : IReservoir<Vector6d>
+    public class DryGasDeadOilReservoir : IReservoir
     {
         public int funcall;
-        public bool UseUpstreamWeightingForInjection = false;
+        public bool UseUpstreamWeightingForInjection
+        {
+            get => useUpstreamweighting;
+            set => useUpstreamweighting = value;
+        }
+        bool useUpstreamweighting = false;
         public List<double> Time, SweepEff;
         readonly Func<ADiff<Vector6d>, ADiff<Vector6d>> Er;
         (double maxDP, double maxDSw, double maxDSg, int i_p, int i_w, int i_g) CheckSolution(double[] xs)
@@ -34,6 +39,7 @@ namespace ReservoirSimulator
         double[] Coord, Zcorn;
         readonly double Prefr, cr, γo0, γw0, γg0;
         public Grid<Vector6d>[] Grids;
+        public List<Grid<Vector6d>> ActiveGrids;
         public List<Well<Vector6d>> Wells;
         Aquifer Aquifer;
         Dictionary<(int, int), EQUILPressureDepth> EquilPVTCombinations = [];
@@ -43,10 +49,6 @@ namespace ReservoirSimulator
         PVDGAnalysis[] PVDGs;
         SWOFAnalysis[] SWOFs;
         SGOFAnalysis[] SGOFs;
-
-        List<Well<Vector6d>> IReservoir<Vector6d>.WELLS => Wells;
-
-        Grid<Vector6d>[] IReservoir<Vector6d>.GRIDS => Grids;
 
         public DryGasDeadOilReservoir(EclipseDataDeck Data)
         {
@@ -123,7 +125,18 @@ namespace ReservoirSimulator
             γg0 = (Utility.Convert(Data.SurfaceGasDensity, "Density", incomingUnit, Units.FIELD) / 144.0) * (SCF_PER_MSCF / FT3_PER_BBL);
 
             // REGION
-            NumActiveGrids = Utility.SetAcitveGrids(Grids, Data.ActnumArray, Er);
+            NumActiveGrids = Utility.SetActiveGrids(Grids, Data.ActnumArray, Er);
+            ActiveGrids = [.. Grids.Where(g => g.isActive)];
+            foreach (var grid in ActiveGrids)
+            {
+                int satnum = Data.SatnumArray[grid.GlobalIndex];
+                grid.SWOF = SWOFs[satnum - 1];
+                grid.SGOF = SGOFs[satnum - 1];
+                int pvtnum = Data.PvtnumArray[grid.GlobalIndex];
+                grid.PVTW = PVTWs[pvtnum - 1];
+                grid.PVDG = PVDGs[pvtnum - 1];
+                grid.PVDO = PVDOs[pvtnum - 1];
+            }
 
             // TRANSMISSIBILITY
             Utility.BuildStructuredConnections(Grids, Nx, Ny, Nz);
