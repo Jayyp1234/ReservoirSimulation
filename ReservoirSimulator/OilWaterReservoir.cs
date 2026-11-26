@@ -154,20 +154,27 @@ namespace ReservoirSimulator
                     Func<double, double> γo = P => γo0 / pvdo.Result.EvaluateBo(P),
                                          γw = P => γw0 / pvtw.Result.EvaluateBw(P);
 
+
+                    // Oil leg gradient (existing): dPo/dz = c * γopr(p, Rszp(z, p))
+                    double OilGrad(double z, double p) => γo(p);
+
+                    // Water leg gradient (existing): dPw/dz = c * γwpr(p)
+                    double WaterGrad(double z, double p) => γw(p);
+
                     var equildata = new EQUILPressureDepth(equil);
                     int nDatum = Max(10, (int)(Abs(equildata.ZDatum - equildata.ZWOC) / Max(1.0, MaxZ - MinZ) * Nz * 10));
 
                     if (equildata.ZDatum < equildata.ZWOC)
                     {
                         // Downward integration from ZDatum -> ZWOC: target pressure is Last().P
-                        var oil2WOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZWOC, nDatum, γo);
+                        var oil2WOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZWOC, nDatum, OilGrad);
                         equildata.PoWOC = oil2WOC.Last().P;
                         equildata.PwWOC = equildata.PoWOC - equildata.PcWOC;
                     }
                     else
                     {
                         // Upward integration from ZDatum -> ZWOC: target pressure is First().P
-                        var water2WOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZWOC, nDatum, γw);
+                        var water2WOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZWOC, nDatum, WaterGrad);
                         equildata.PwWOC = water2WOC.First().P;
                         equildata.PoWOC = equildata.PwWOC + equildata.PcWOC;
                     }
@@ -177,8 +184,8 @@ namespace ReservoirSimulator
                     {
                         int nUp = Max(10, (int)(Abs(MinZ - equildata.ZWOC) / Max(1.0, MaxZ - MinZ) * Nz));
                         // Already returned in ascending Z order [MinZ .. ZWOC] — do NOT reverse
-                        var oilUp = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PoWOC, MinZ, nUp, γo);
-                        var watUp = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PwWOC, MinZ, nUp, γw);
+                        var oilUp = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PoWOC, MinZ, nUp, OilGrad);
+                        var watUp = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PwWOC, MinZ, nUp, WaterGrad);
 
                         equildata.OilZonePressureDepthPairs.AddRange(oilUp);
                         equildata.WaterZonePressureDepthPairs.AddRange(watUp);
@@ -188,7 +195,7 @@ namespace ReservoirSimulator
                     if (MaxZ > equildata.ZWOC)
                     {
                         int nDown = Max(10, (int)(Abs(MaxZ - equildata.ZWOC) / Max(1.0, MaxZ - MinZ) * Nz));
-                        var watDown = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PwWOC, MaxZ, nDown, γw);
+                        var watDown = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PwWOC, MaxZ, nDown, WaterGrad);
                         var oilDown = watDown.Select(pz => new PressureDepthPair(pz.Z, pz.P + equildata.PcWOC));
 
                         int skip = equildata.WaterZonePressureDepthPairs.Count > 0 ? 1 : 0;

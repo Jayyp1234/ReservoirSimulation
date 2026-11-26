@@ -245,8 +245,9 @@ namespace ReservoirSimulator
             return Abs(area * 0.5);
         }
 
-        internal static List<PressureDepthPair> IntegrateLegRK4(double zStart, double pStart, 
-            double zEnd, int N, Func<double, double> getGradient)
+       
+        internal static List<PressureDepthPair> IntegrateLegRK4(double zStart, double pStart,
+            double zEnd, int N, Func<double, double, double> getGradient)
         {
             if (N <= 0 || zStart == zEnd)
             {
@@ -263,46 +264,10 @@ namespace ReservoirSimulator
             table.Add(new(currentZ, currentP));
             for (int n = 0; n < N; n++)
             {
-                double k1 = getGradient(currentP);
-                double k2 = getGradient(currentP + 0.5 * h * k1);
-                double k3 = getGradient(currentP + 0.5 * h * k2);
-                double k4 = getGradient(currentP + h * k3);
-                currentP += (h / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
-                currentZ += h;
-                table.Add(new(currentZ, currentP));
-            }
-
-            // Always return pairs in ascending depth (Z) order for table interpolation
-            if (zEnd < zStart)
-                table.Reverse();
-
-            return table;
-        }
-
-        internal static List<PressureDepthPair> IntegrateLegRK4(
-            double zStart, double pStart, double zEnd, int N,
-            Func<double, double, double> getGradient, Func<double, double, double> RsRv_D)
-        {
-            if (N <= 0 || zStart == zEnd)
-            {
-                return zStart <= zEnd
-                    ? [new PressureDepthPair(zStart, pStart), new PressureDepthPair(zEnd, pStart)]
-                    : [new PressureDepthPair(zEnd, pStart), new PressureDepthPair(zStart, pStart)];
-            }
-
-            Func<double, double, double> gradientFunc = (z, p) => getGradient(p, RsRv_D(z, p));
-            var table = new List<PressureDepthPair>(N + 1);
-            double currentZ = zStart;
-            double currentP = pStart;
-            double h = (zEnd - zStart) / N;
-
-            table.Add(new(currentZ, currentP));
-            for (int n = 0; n < N; n++)
-            {
-                double k1 = gradientFunc(currentZ, currentP);
-                double k2 = gradientFunc(currentZ + 0.5 * h, currentP + 0.5 * h * k1);
-                double k3 = gradientFunc(currentZ + 0.5 * h, currentP + 0.5 * h * k2);
-                double k4 = gradientFunc(currentZ + h, currentP + h * k3);
+                double k1 = getGradient(currentZ, currentP);
+                double k2 = getGradient(currentZ + 0.5 * h, currentP + 0.5 * h * k1);
+                double k3 = getGradient(currentZ + 0.5 * h, currentP + 0.5 * h * k2);
+                double k4 = getGradient(currentZ + h, currentP + h * k3);
                 currentP += (h / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
                 currentZ += h;
                 table.Add(new(currentZ, currentP));
