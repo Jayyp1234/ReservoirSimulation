@@ -124,8 +124,20 @@ namespace ReservoirSimulator
             γw0 = Utility.Convert(Data.SurfaceWaterDensity, "Density", incomingUnit, Units.FIELD) / 144.0;
             γg0 = (Utility.Convert(Data.SurfaceGasDensity, "Density", incomingUnit, Units.FIELD) / 144.0) * (SCF_PER_MSCF / FT3_PER_BBL);
 
+            // MINPV: cells holding less pore volume than the deck's minimum are made inactive, as in ECLIPSE.
+            // A copy of ACTNUM is changed, so the deck itself keeps what the user wrote.
+            List<int> actnum = [.. Data.ActnumArray];
+            if (Data.MinPoreVolume > 0)
+            {
+                double minPv = Utility.Convert(Data.MinPoreVolume, "Reservoir Volume", incomingUnit, Units.FIELD);
+                int removed = 0;
+                for (int m = 0; m < Ngrids; m++)
+                    if (actnum[m] > 0 && Grids[m].PoreVolume < minPv) { actnum[m] = 0; removed++; }
+                Console.WriteLine($"      [Grid] MINPV {Data.MinPoreVolume}: {removed} cell(s) with less pore volume made inactive.");
+            }
+
             // REGION
-            NumActiveGrids = Utility.SetActiveGrids(Grids, Data.ActnumArray, Er);
+            NumActiveGrids = Utility.SetActiveGrids(Grids, actnum, Er);
             ActiveGrids = [.. Grids.Where(g => g.isActive)];
             foreach (var grid in ActiveGrids)
             {
@@ -140,7 +152,7 @@ namespace ReservoirSimulator
 
             // TRANSMISSIBILITY
             Utility.BuildStructuredConnections(Grids, Nx, Ny, Nz);
-            //Utility.ComputeFaceTransmissibility(Grids);
+            Utility.ApplyTransmissibilityMultipliers(Grids, Nx, Ny, Nz, Data);
 
 
             // 1. Build EQUIL Pressure-Depth Tables for every (EQUILNUM, PVTNUM) pair
@@ -148,116 +160,7 @@ namespace ReservoirSimulator
             double MaxZ = Grids.Max(grid => grid.Center.Z);
             double MinZ = Grids.Min(grid => grid.Center.Z);
 
-            for (int e = 0; e < EQUILs.Length; e++)
-            {
-                for (int p = 0; p < PVDOs.Length; p++)
-                {
-                    var equil = EQUILs[e]; var pvdo = PVDOs[p]; var pvtw = PVTWs[p]; var pvdg = PVDGs[p];
-                    Func<double, double> γo = P => γo0 / pvdo.Result.EvaluateBo(P),
-                                         γw = P => γw0 / pvtw.Result.EvaluateBw(P),
-                                         γg = P => γg0 / pvdg.Result.EvaluateBg(P);
-
-                    var equildata = new EQUILPressureDepth(equil);
-                    double zSpan = Max(1.0, MaxZ - MinZ);
-
-                    int StepsFor(double z1, double z2, int scale = 1) =>
-                        Max(10, (int)(Abs(z1 - z2) / zSpan * Nz * scale));
-
-                    // 1. Resolve Po, Pw, Pg at ZGOC and ZWOC starting from (ZDatum, PDatum)
-                    if (equildata.ZDatum <= equildata.ZGOC)
-                    {
-                        // Datum in gas cap -> integrate gas down to ZGOC, then oil down to ZWOC
-                        var gas2GOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZGOC,
-                            StepsFor(equildata.ZDatum, equildata.ZGOC, 10), γg);
-                        equildata.PgGOC = gas2GOC.Last().P;
-                        equildata.PoGOC = equildata.PgGOC - equildata.PcGOC;
-
-                        var oilGOC2WOC = Utility.IntegrateLegRK4(equildata.ZGOC, equildata.PoGOC, equildata.ZWOC,
-                            StepsFor(equildata.ZGOC, equildata.ZWOC, 10), γo);
-                        equildata.PoWOC = oilGOC2WOC.Last().P;
-                        equildata.PwWOC = equildata.PoWOC - equildata.PcWOC;
-                    }
-                    else if (equildata.ZDatum < equildata.ZWOC)
-                    {
-                        // Datum in oil zone -> integrate oil up to ZGOC and down to ZWOC
-                        var oil2GOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZGOC,
-                            StepsFor(equildata.ZDatum, equildata.ZGOC, 10), γo);
-                        equildata.PoGOC = oil2GOC.Last().P;
-                        equildata.PgGOC = equildata.PoGOC + equildata.PcGOC;
-
-                        var oil2WOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZWOC,
-                            StepsFor(equildata.ZDatum, equildata.ZWOC, 10), γo);
-                        equildata.PoWOC = oil2WOC.Last().P;
-                        equildata.PwWOC = equildata.PoWOC - equildata.PcWOC;
-                    }
-                    else
-                    {
-                        // Datum in water zone -> integrate water up to ZWOC, then oil up to ZGOC
-                        var water2WOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZWOC,
-                            StepsFor(equildata.ZDatum, equildata.ZWOC, 10), γw);
-                        equildata.PwWOC = water2WOC.Last().P;
-                        equildata.PoWOC = equildata.PwWOC + equildata.PcWOC;
-
-                        var oilWOC2GOC = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PoWOC, equildata.ZGOC,
-                            StepsFor(equildata.ZWOC, equildata.ZGOC, 10), γo);
-                        equildata.PoGOC = oilWOC2GOC.Last().P;
-                        equildata.PgGOC = equildata.PoGOC + equildata.PcGOC;
-                    }
-
-                    // 2. Gas Cap Leg: Z from MinZ down to ZGOC (only if MinZ < ZGOC)
-                    if (MinZ < equildata.ZGOC)
-                    {
-                        int nGas = StepsFor(MinZ, equildata.ZGOC);
-                        var gasUp = Utility.IntegrateLegRK4(equildata.ZGOC, equildata.PgGOC, MinZ, nGas, γg);
-                        var oilUp = Utility.IntegrateLegRK4(equildata.ZGOC, equildata.PoGOC, MinZ, nGas, γo);
-                        var watUp = Utility.IntegrateLegRK4(equildata.ZGOC, equildata.PoGOC - equildata.PcWOC, MinZ, nGas, γw);
-
-                        gasUp.Reverse(); oilUp.Reverse(); watUp.Reverse();
-
-                        equildata.GasZonePressureDepthPairs.AddRange(gasUp);
-                        equildata.OilZonePressureDepthPairs.AddRange(oilUp);
-                        equildata.WaterZonePressureDepthPairs.AddRange(watUp);
-                    }
-
-                    // 3. Oil Leg: Z from ZGOC down to ZWOC (only if ZGOC < ZWOC)
-                    double zOilTop = Max(MinZ, equildata.ZGOC);
-                    double zOilBot = Min(MaxZ, equildata.ZWOC);
-                    if (zOilTop < zOilBot)
-                    {
-                        int nOil = StepsFor(zOilTop, zOilBot);
-                        var oilMid = Utility.IntegrateLegRK4(equildata.ZGOC, equildata.PoGOC, zOilBot, nOil, γo);
-                        var watMid = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PwWOC, zOilTop, nOil, γw);
-                        watMid.Reverse();
-
-                        // Below ZGOC there is no free gas (Sg = 0): Pg tracks Po + PcGOC
-                        var gasMid = oilMid.Select(pz => new PressureDepthPair(pz.Z, pz.P + equildata.PcGOC));
-
-                        int skip = equildata.OilZonePressureDepthPairs.Count > 0 ? 1 : 0;
-                        equildata.OilZonePressureDepthPairs.AddRange(oilMid.Skip(skip));
-                        equildata.WaterZonePressureDepthPairs.AddRange(watMid.Skip(skip));
-                        equildata.GasZonePressureDepthPairs.AddRange(gasMid.Skip(skip));
-                    }
-
-                    // 4. Water Leg: Z from ZWOC down to MaxZ (only if MaxZ > ZWOC)
-                    if (MaxZ > equildata.ZWOC)
-                    {
-                        int nDown = StepsFor(equildata.ZWOC, MaxZ);
-                        var watDown = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PwWOC, MaxZ, nDown, γw);
-
-                        // Below ZWOC mobile oil/gas vanish (Sw = 1 - Sor): Po = Pw + PcWOC, Pg = Po + PcGOC
-                        var oilDown = watDown.Select(pz => new PressureDepthPair(pz.Z, pz.P + equildata.PcWOC));
-                        var gasDown = oilDown.Select(pz => new PressureDepthPair(pz.Z, pz.P + equildata.PcGOC));
-
-                        int skip = equildata.WaterZonePressureDepthPairs.Count > 0 ? 1 : 0;
-                        equildata.WaterZonePressureDepthPairs.AddRange(watDown.Skip(skip));
-                        equildata.OilZonePressureDepthPairs.AddRange(oilDown.Skip(skip));
-                        equildata.GasZonePressureDepthPairs.AddRange(gasDown.Skip(skip));
-                    }
-
-                    EquilPVTCombinations[(e, p)] = equildata;
-                }
-            }
-
+            
             // WELLS
             Wells = [.. Data.Wells.Select(well => new Well<Vector6d>(well.Value, Nx, Ny, Nz, Grids, incomingUnit))];
             foreach (var well in Wells.Where(w => w.PerfNatIndex.Count == 0))
@@ -980,7 +883,7 @@ namespace ReservoirSimulator
 
                 // At the very end of Residual(xs, tnp1), after accumulation + faces + wells are all in Res:
 
-                double MaxCNV = 0;
+                double MaxCNV = 0.0;
                 foreach (var grid in Grids)
                 {
                     if (!grid.isActive) continue;
@@ -995,20 +898,16 @@ namespace ReservoirSimulator
                     if (cnvGas > MaxCNV) MaxCNV = cnvGas;
                 }
 
-                // If you also have explicit well BHP equations at rows [2*NumActiveGrids .. totalRows-1]:
-                int wellOffset = 2 * NumActiveGrids;
+                int wellOffset = 3 * NumActiveGrids;
                 for (int wellidx = 0; wellidx < NumWells; wellidx++)
                 {
                     var well = Wells[wellidx];
                     if (!well.isActive) continue;
 
                     bool isProducer = well.WellType == WellType.PRODUCER;
-                    well.Zref = isProducer ? well.HighestZref : well.LowestZref;
-
                     int row0 = wellOffset + 2 * wellidx + 0;
                     int row1 = wellOffset + 2 * wellidx + 1;
 
-                    // Resolve active rate target & BHP limit from the role-specific control record
                     double targetRate = 0.0;
                     double bhpLimit = 14.7;
 
@@ -1023,7 +922,7 @@ namespace ReservoirSimulator
                                 ConstraintType.WRATE => prod.WaterRateTarget,
                                 ConstraintType.GRATE => prod.GasRateTarget,
                                 ConstraintType.LRATE => prod.LiquidRateTarget,
-                                _ => Max(prod.OilRateTarget, Max(prod.WaterRateTarget, prod.LiquidRateTarget))
+                                _ => Max(prod.OilRateTarget, Max(prod.WaterRateTarget, Max(prod.GasRateTarget, prod.LiquidRateTarget)))
                             };
                         }
                         else if (!isProducer && well.CurrentInjectorControl is { } inj)
@@ -1033,14 +932,13 @@ namespace ReservoirSimulator
                         }
                     }
 
-                    // Current flowing rate provides a physical scale when under BHP control or STOP
-                    double currentFlowRate = Abs(well.Qo.Value) + Abs(well.Qw.Value);
+                    double currentFlowRate = Abs(well.Qo.Value) + Abs(well.Qw.Value) + Abs(well.Qg.Value);
                     double rateScale = Max(1.0, Max(Abs(targetRate), currentFlowRate));
 
-                    // Equation 0: Wellbore rate balance / inflow equation [stb/day] -> normalized
-                    double err0 = Abs(Res[row0]) / rateScale;
+                    // Row 0 (FlowRes) has units of [stb] or [Mscf] because it is multiplied by dt
+                    double err0 = Abs(Res[row0]) / (rateScale * Max(1e-12, dt));
 
-                    // Equation 1: Active control constraint (BHP [psi] vs Rate [stb/day]) -> normalized
+                    // Row 1 (well.Constraint) has units of [psi] for BHP control or [stb/day | Mscf/day] for rate control
                     double ctrlScale = well.ConstraintType is ConstraintType.MAX_BHP or ConstraintType.MIN_BHP
                         ? Max(14.7, Abs(bhpLimit))
                         : rateScale;
@@ -1216,18 +1114,22 @@ namespace ReservoirSimulator
                     foreach (var grid in Grids)
                     {
                         if (!grid.isActive) continue;
-                        grid.ErSo_Bo_n = grid.ErSo_Bo_np1.Value;
                         grid.ErSw_Bw_n = grid.ErSw_Bw_np1.Value;
-                        grid.Po_n = grid.Po_np1; grid.Sw_n = grid.Sw_np1;
-                        grid.Pw_n = grid.Pw_np1; grid.So_n = grid.So_np1;
+                        grid.ErSo_Bo_n = grid.ErSo_Bo_np1.Value;
+                        grid.ErSg_Bg_n = grid.ErSg_Bg_np1.Value;
+                        grid.Pw_n = grid.Pw_np1; grid.Sw_n = grid.Sw_np1;
+                        grid.Po_n = grid.Po_np1; grid.So_n = grid.So_np1;
+                        grid.Pg_n = grid.Pg_np1; grid.Sg_n = grid.Sg_np1; grid.Rs_n = grid.Rs_np1;
                         grid.SaveResult(po: grid.Po_n, pw: grid.Pw_n, so: grid.So_n, sw: grid.Sw_n);
                     }
                     foreach (var well in Wells)
                     {
-                        well.Pwf_n = well.Pwf_np1; well.Qo_n = well.Qo_np1;
-                        well.Ql_n = well.Ql_np1; well.Qw_n = well.Qw_np1;
-                        well.SaveResult(pwf: well.Pwf_n, qo: well.Qo_n, qw: well.Qw_n);
+                        well.Pwf_n = well.Pwf_np1;
+                        well.Qo_n = well.Qo_np1; well.Qw_n = well.Qw_np1;
+                        well.Ql_n = well.Ql_np1; well.Qg_n = well.Qg_np1;
+                        well.SaveResult(pwf: well.Pwf_n, qw: well.Qw_n, qo: well.Qo_n, qg: well.Qg_n);
                     }
+
 
                     isComplete = Abs(t - L) < 1e-13;
 

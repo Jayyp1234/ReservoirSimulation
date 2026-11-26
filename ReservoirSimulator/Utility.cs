@@ -245,15 +245,21 @@ namespace ReservoirSimulator
             return Abs(area * 0.5);
         }
 
-        internal static List<PressureDepthPair> IntegrateLegRK4(double zStart, double pStart, double zEnd, int N, Func<double, double> getGradient)
+        internal static List<PressureDepthPair> IntegrateLegRK4(double zStart, double pStart, 
+            double zEnd, int N, Func<double, double> getGradient)
         {
             if (N <= 0 || zStart == zEnd)
-                return [new PressureDepthPair(zStart, pStart), new PressureDepthPair(zEnd, pStart)];
+            {
+                return zStart <= zEnd
+                    ? [new PressureDepthPair(zStart, pStart), new PressureDepthPair(zEnd, pStart)]
+                    : [new PressureDepthPair(zEnd, pStart), new PressureDepthPair(zStart, pStart)];
+            }
 
-            var table = new List<PressureDepthPair>();
+            var table = new List<PressureDepthPair>(N + 1);
             double currentZ = zStart;
             double currentP = pStart;
             double h = (zEnd - zStart) / N;
+
             table.Add(new(currentZ, currentP));
             for (int n = 0; n < N; n++)
             {
@@ -265,19 +271,31 @@ namespace ReservoirSimulator
                 currentZ += h;
                 table.Add(new(currentZ, currentP));
             }
+
+            // Always return pairs in ascending depth (Z) order for table interpolation
+            if (zEnd < zStart)
+                table.Reverse();
+
             return table;
         }
 
-        internal static List<PressureDepthPair> IntegrateLegRK4(double zStart, double pStart, double zEnd, int N, 
-            Func<double, double, double> getGradient, Func<double, double> RsRv_D)
+        internal static List<PressureDepthPair> IntegrateLegRK4(
+            double zStart, double pStart, double zEnd, int N,
+            Func<double, double, double> getGradient, Func<double, double, double> RsRv_D)
         {
             if (N <= 0 || zStart == zEnd)
-                return [new PressureDepthPair(zStart, pStart), new PressureDepthPair(zEnd, pStart)];
-            Func<double, double, double> gradientFunc = (h, p) => getGradient(p, RsRv_D(h));
-            var table = new List<PressureDepthPair>();
+            {
+                return zStart <= zEnd
+                    ? [new PressureDepthPair(zStart, pStart), new PressureDepthPair(zEnd, pStart)]
+                    : [new PressureDepthPair(zEnd, pStart), new PressureDepthPair(zStart, pStart)];
+            }
+
+            Func<double, double, double> gradientFunc = (z, p) => getGradient(p, RsRv_D(z, p));
+            var table = new List<PressureDepthPair>(N + 1);
             double currentZ = zStart;
             double currentP = pStart;
             double h = (zEnd - zStart) / N;
+
             table.Add(new(currentZ, currentP));
             for (int n = 0; n < N; n++)
             {
@@ -289,6 +307,11 @@ namespace ReservoirSimulator
                 currentZ += h;
                 table.Add(new(currentZ, currentP));
             }
+
+            // Always return pairs in ascending depth (Z) order for table interpolation
+            if (zEnd < zStart)
+                table.Reverse();
+
             return table;
         }
 

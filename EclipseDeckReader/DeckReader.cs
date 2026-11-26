@@ -256,9 +256,11 @@ namespace EclipseDeckReader
                             break;
 
                         case "DRSDT":
-                            var drsdt = KeywordExtractor.ExtractDoubleArray(tokens, ref i);
-                            if (drsdt.Count > 0)
-                                Console.WriteLine($"      [Schedule] DRSDT configured: {drsdt[0]}");
+                            ParseDissolutionRateKeyword(tokens, ref i, deck, isVaporization: false);
+                            break;
+
+                        case "DRVDT":
+                            ParseDissolutionRateKeyword(tokens, ref i, deck, isVaporization: true);
                             break;
 
                         case "WELSPECS":
@@ -333,7 +335,6 @@ namespace EclipseDeckReader
                             if (densities.Count >= 3)
                                 deck.SurfaceGasDensity = densities[2];
                             Console.WriteLine($"      [Data] DENSITY: Loaded Surface Baselines -> Oil: {deck.SurfaceOilDensity:F2} | Water: {deck.SurfaceWaterDensity:F2} | Gas: {deck.SurfaceGasDensity:F4}");
-                            
                             break;
 
                         case "ROCK":
@@ -356,6 +357,11 @@ namespace EclipseDeckReader
                         case "RSVD":
                             deck.RawRsvdTables.AddRange(ParseRowStructuredRegions(tokens, ref i, columnsPerRow: 2));
                             Console.WriteLine($"      [Data] RSVD: Loaded {deck.RawRsvdTables.Count} region table(s).");
+                            break;
+
+                        case "RVVD":
+                            deck.RawRvvdTables.AddRange(ParseRowStructuredRegions(tokens, ref i, columnsPerRow: 2));
+                            Console.WriteLine($"      [Data] RVVD: Loaded {deck.RawRvvdTables.Count} region table(s).");
                             break;
 
                         case "FLUXNUM":
@@ -392,6 +398,43 @@ namespace EclipseDeckReader
                     i++;
                 }
             }
+        }
+
+        private static void ParseDissolutionRateKeyword(List<Token> tokens, ref int index, EclipseDataDeck deck, bool isVaporization)
+        {
+            List<string> record = ReadRecordTokensUntilSlash(tokens, ref index);
+
+            // Item 1: Max rate of Rs/Rv increase (defaulted 1* or omitted => PositiveInfinity = unlimited)
+            double maxRate = double.PositiveInfinity;
+            if (record.Count > 0 && record[0] != "1*" && !string.IsNullOrWhiteSpace(record[0]) &&
+                double.TryParse(record[0], NumberStyles.Any, CultureInfo.InvariantCulture, out double parsedRate))
+            {
+                maxRate = Math.Max(0.0, parsedRate);
+            }
+
+            // Item 2: Option flag ('ALL' [default] or 'FREE')
+            string option = (record.Count > 1 && record[1] != "1*" && !string.IsNullOrWhiteSpace(record[1]))
+                ? record[1].ToUpperInvariant()
+                : "ALL";
+
+            int stepIdx = deck.TimeSteps.Count;
+            string kwName = isVaporization ? "DRVDT" : "DRSDT";
+            string rateDisplay = double.IsInfinity(maxRate) ? "UNLIMITED" : maxRate.ToString(CultureInfo.InvariantCulture);
+
+            if (isVaporization)
+            {
+                deck.DrvdtMax = maxRate;
+                deck.DrvdtOption = option;
+                deck.DrvdtSchedule.Add(new DissolutionRateRecord(stepIdx, maxRate, option));
+            }
+            else
+            {
+                deck.DrsdtMax = maxRate;
+                deck.DrsdtOption = option;
+                deck.DrsdtSchedule.Add(new DissolutionRateRecord(stepIdx, maxRate, option));
+            }
+
+            Console.WriteLine($"      [Schedule] {kwName} configured at step {stepIdx}: Rate={rateDisplay}, Option={option}");
         }
 
         // Keywords that only size arrays or control printed/written output; skipping them does not change the results
@@ -714,7 +757,6 @@ namespace EclipseDeckReader
             "DEC" or "DECEMBER" => 12,
             _ => throw new FormatException($"Unrecognized ECLIPSE month token: '{monthStr}'.")
         };
-
 
         private void ParseWellSpecsBlock(List<Token> tokens, ref int index, EclipseDataDeck deck)
         {
@@ -1551,6 +1593,5 @@ namespace EclipseDeckReader
 
             Console.WriteLine($"      [Data] MULTREGT: Loaded {multregtRecords.Count - countBefore} region transmissibility multiplier(s).");
         }
-
     }
 }

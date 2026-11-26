@@ -13,8 +13,8 @@ namespace ReservoirSimulator
         const double alpha = 1.127e-3, beta = 5.615;
         public bool LogResult { get; set; }
         public bool isActive { get { return ActiveIndex >= 0; } }
-        public bool GasIsDissolved { get; set; } = false;
-        public bool OilIsVaporised { get; set; } = false;
+        public bool OilIsSaturated { get; set; } = false;
+        public bool GasIsSaturated { get; set; } = false;
         public double NTG { get; set; }
         public double Porosity { get; set; } = 0;
         public double PoreVolumeMultiplier { get; set; } = 1.0;   // MULTPV
@@ -94,10 +94,18 @@ namespace ReservoirSimulator
             set
             {
                 pvto = value;
-                Rs = Po => pvto.Result.EvaluateRs(Po);
+                RsSat = Po => pvto.Result.EvaluateRs(Po);
             }
         }
-        public PVTGAnalysis PVTG { get { return pvtg; } set { pvtg = value; } }
+        public PVTGAnalysis PVTG 
+        {
+            get => pvtg;
+            set 
+            { 
+                pvtg = value;
+                RvSat = Po => pvtg.Result.EvaluateRv(Po);
+            } 
+        }
         public RSVDAnalysis RSVD 
         {
             get => rsvd;
@@ -132,7 +140,7 @@ namespace ReservoirSimulator
         public double Po_n, Pw_n, Pg_n, Sw_n, So_n, Sg_n, Rs_n, Rv_n, ErSo_Bo_n, ErSw_Bw_n, ErSg_Bg_n, WI, γo0, γw0, γg0;
         public double Po_np1, Pw_np1, Pg_np1, Sw_np1, So_np1, Sg_np1, Rs_np1, Rv_np1, Bo_np1, Bw_np1, Bg_np1;
         public ADiff<T> ErSo_Bo_np1, ErSw_Bw_np1, ErSg_Bg_np1;
-        public Func<ADiff<T>, ADiff<T>> Krw, Krow, Krg, Krog, Pcow, Pcog, Pcgw, Bo, Bw, Bg, μo, μw, μg, γo, γw, γg, Er, Rs, Rv;
+        public Func<ADiff<T>, ADiff<T>> Krw, Krow, Krg, Krog, Pcow, Pcog, Pcgw, Bo, Bw, Bg, μo, μw, μg, γo, γw, γg, Er, RsSat, RvSat;
         public Func<double, double> Rsvd, Rvvd;
         
         // Baker's 3-phase relative permeability (smooth everywhere on the Sw-Sg triangle)
@@ -160,7 +168,7 @@ namespace ReservoirSimulator
 
             ADiff<T> pb = EvaluateBubblePointPressure(rs);
             if (p.Value <= pb.Value)
-                return pvto.Result.EvaluateMuo(Rs(p));
+                return pvto.Result.EvaluateMuo(RsSat(p));
 
             ADiff<T> muSat = pvto.Result.EvaluateMuo(rs);
             return muSat * Exp(pvto.Result.UndersatViscosibility * (p - pb));
@@ -172,7 +180,7 @@ namespace ReservoirSimulator
 
             ADiff<T> pb = EvaluateBubblePointPressure(rs);
             if (p.Value <= pb.Value)
-                return EvaluateBo(Rs(p));
+                return EvaluateBo(RsSat(p));
 
             ADiff<T> boSat = EvaluateBo(rs);
             return boSat * Exp(-pvto.Result.UndersatCompressibility * (p - pb));

@@ -63,6 +63,8 @@ namespace EclipseDeckReader
                     Console.WriteLine($"  └─ Equilibrium Region {e + 1} -> Datum Z: {eq[0]:F1} | Datum P: {eq[1]:F2} | WOC Z: {eq[2]:F1} | GOC Z: {eq[4]:F1}");
                 }
             }
+            PrintTableGroupOverview("Dissolved GOR vs Depth (RSVD)", deck.RawRsvdTables, "Depth Rows");
+            PrintTableGroupOverview("Vaporized Oil vs Depth (RVVD)", deck.RawRvvdTables, "Depth Rows");
             Console.WriteLine();
 
             // 6. Rock Mechanical Properties
@@ -151,9 +153,30 @@ namespace EclipseDeckReader
             PrintTableGroupOverview("Gas-Oil Saturation Functions (SGOF)", deck.RawSgofTables);
             Console.WriteLine("==================================================================");
 
-            // 11. Schedule Timeline Overview
+            // 11. Schedule Timeline & Mass-Transfer Rate Limits Overview
             Console.WriteLine($"* Schedule Timeline                  : Start = {deck.StartDate:yyyy-MM-dd} | End = {deck.CurrentSimDate:yyyy-MM-dd}");
-            Console.WriteLine($"  └─ Total Report Steps              : {deck.TimeSteps.Count} (Cumulative Duration = {deck.TimeSteps.Sum():F1} days)");
+            Console.WriteLine($"  ├─ Total Report Steps              : {deck.TimeSteps.Count} (Cumulative Duration = {deck.TimeSteps.Sum():F1} days)");
+            PrintDissolutionSchedule("Gas Dissolution Limit (DRSDT)", deck.DrsdtSchedule);
+            PrintDissolutionSchedule("Oil Vaporization Limit (DRVDT)", deck.DrvdtSchedule);
+            Console.WriteLine("==================================================================");
+        }
+
+        private static void PrintDissolutionSchedule(string label, List<DissolutionRateRecord> schedule)
+        {
+            if (schedule == null || schedule.Count == 0)
+            {
+                Console.WriteLine($"  ├─ {label,-32}: [UNLIMITED (Default)]");
+                return;
+            }
+
+            Console.WriteLine($"  ├─ {label,-32}: {schedule.Count} Schedule Entry(ies)");
+            for (int s = 0; s < schedule.Count; s++)
+            {
+                var rec = schedule[s];
+                string branch = s == schedule.Count - 1 ? "└─" : "├─";
+                string rateText = double.IsInfinity(rec.MaxRate) ? "UNLIMITED" : $"{rec.MaxRate:G6}";
+                Console.WriteLine($"  │  {branch} From Step [{rec.StepIndex}]: MaxRate = {rateText} | Option = {rec.Option}");
+            }
         }
 
         private static void PrintArrayStats(string arrayName, List<double> array)

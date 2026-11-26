@@ -139,7 +139,6 @@ namespace ReservoirSimulator
             // TRANSMISSIBILITY
             Utility.BuildStructuredConnections(Grids, Nx, Ny, Nz);
             Utility.ApplyTransmissibilityMultipliers(Grids, Nx, Ny, Nz, Data);
-            //Utility.ComputeFaceTransmissibility(Grids);
 
 
             // 1. Build EQUIL Pressure-Depth Tables for every (EQUILNUM, PVTNUM) pair
@@ -160,25 +159,27 @@ namespace ReservoirSimulator
 
                     if (equildata.ZDatum < equildata.ZWOC)
                     {
+                        // Downward integration from ZDatum -> ZWOC: target pressure is Last().P
                         var oil2WOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZWOC, nDatum, γo);
                         equildata.PoWOC = oil2WOC.Last().P;
                         equildata.PwWOC = equildata.PoWOC - equildata.PcWOC;
                     }
                     else
                     {
+                        // Upward integration from ZDatum -> ZWOC: target pressure is First().P
                         var water2WOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZWOC, nDatum, γw);
-                        equildata.PwWOC = water2WOC.Last().P;
+                        equildata.PwWOC = water2WOC.First().P;
                         equildata.PoWOC = equildata.PwWOC + equildata.PcWOC;
                     }
 
-                    // Upper leg: Z from MinZ up to ZWOC (only if MinZ < ZWOC)
+                    // Upper leg: Z from MinZ down to ZWOC (only if MinZ < ZWOC)
                     if (MinZ < equildata.ZWOC)
                     {
                         int nUp = Max(10, (int)(Abs(MinZ - equildata.ZWOC) / Max(1.0, MaxZ - MinZ) * Nz));
+                        // Already returned in ascending Z order [MinZ .. ZWOC] — do NOT reverse
                         var oilUp = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PoWOC, MinZ, nUp, γo);
                         var watUp = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PwWOC, MinZ, nUp, γw);
 
-                        oilUp.Reverse(); watUp.Reverse();
                         equildata.OilZonePressureDepthPairs.AddRange(oilUp);
                         equildata.WaterZonePressureDepthPairs.AddRange(watUp);
                     }

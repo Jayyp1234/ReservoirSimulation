@@ -64,6 +64,7 @@ namespace EclipseDeckReader
         public List<List<List<double>>> RawSgofTables { get; } = [];
         public List<List<double>> RawEquilTables { get; } = [];
         public List<List<List<double>>> RawRsvdTables { get; } = [];
+        public List<List<List<double>>> RawRvvdTables { get; } = [];
 
         // 10. Fault Structures & Region Transmissibility Multipliers
         public Dictionary<string, FaultRecord> Faults { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -72,13 +73,35 @@ namespace EclipseDeckReader
         // 11. Dynamic Well Networks Block
         public Dictionary<string, WellData> Wells { get; } = new(StringComparer.OrdinalIgnoreCase);
 
-        // 12. Dynamic Timeline Synchronization State
-
-        // 12. Dynamic Timeline Synchronization State
+        // 12. Dynamic Timeline & Phase Mass-Transfer Rate Limits (DRSDT / DRVDT)
         public DateTime StartDate { get; set; }                       // Master baseline anchor point (Day 0)
         public DateTime CurrentSimDate { get; set; } = DateTime.Now;  // Tracks active day as scheduler advances
         public List<double> TimeSteps { get; } = [];                  // Explicit dt durations (in days) from TSTEP & DATES
         public List<DateTime> ReportDates { get; } = [];              // Cumulative target dates for each report step
+
+        /// <summary>
+        /// Active maximum rate of Rs increase [Mscf/stb/day] (PositiveInfinity = unlimited dissolution).
+        /// </summary>
+        public double DrsdtMax { get; set; } = double.PositiveInfinity;
+        public string DrsdtOption { get; set; } = "ALL";
+        public bool HasDrsdtLimit => !double.IsInfinity(DrsdtMax);
+        public List<DissolutionRateRecord> DrsdtSchedule { get; } = [];
+
+        /// <summary>
+        /// Active maximum rate of Rv increase [stb/Mscf/day] (PositiveInfinity = unlimited vaporization).
+        /// </summary>
+        public double DrvdtMax { get; set; } = double.PositiveInfinity;
+        public string DrvdtOption { get; set; } = "ALL";
+        public bool HasDrvdtLimit => !double.IsInfinity(DrvdtMax);
+        public List<DissolutionRateRecord> DrvdtSchedule { get; } = [];
+    }
+
+    public readonly record struct DissolutionRateRecord(
+        int StepIndex,
+        double MaxRate,
+        string Option = "ALL")
+    {
+        public bool IsLimited => !double.IsInfinity(MaxRate);
     }
 
     public readonly record struct MultregtRecord(

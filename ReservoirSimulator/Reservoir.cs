@@ -19,43 +19,42 @@ namespace ReservoirSimulator
 
         public Reservoir(EclipseDataDeck Data)
         {
-            _reservoir = (Data.PhaseFlags.Count == 3)
-                ? new DryGasDeadOilReservoir(Data)   // implements IReservoir<Vector6d>
-                : new OilWaterReservoir(Data);      // implements IReservoir<Vector4d>
+            _reservoir = new DryGasLiveOilReservoir(Data);     // implements IReservoir<Vector4d>
+
 
             //if (Data == null)
             //    throw new ArgumentNullException(nameof(Data), "EclipseDataDeck cannot be null.");
             //// Determine the type of reservoir based on the data deck
-            //if(Data.PhaseFlags.Count == 5)
+            //if (Data.PhaseFlags.Count == 5)
             //{
-            //    reservoir = new WetGasLiveOilReservoir(Data);
+            //    //reservoir = new WetGasLiveOilReservoir(Data);
             //}
-            //else if(Data.PhaseFlags.Count == 4)
+            //else if (Data.PhaseFlags.Count == 4)
             //{
-            //    reservoir = Data.PhaseFlags.Contains("DISGAS") ?
-            //            new DryGasLiveOilReservoir(Data) :
-            //            new WetGasDeadOilReservoir(Data);
+            //    //reservoir = Data.PhaseFlags.Contains("DISGAS") ?
+            //    //        new DryGasLiveOilReservoir(Data) :
+            //    //        new WetGasDeadOilReservoir(Data);
             //}
             //else if (Data.PhaseFlags.Count == 3)
             //{
-            //    reservoir = new DryGasDeadOilReservoir(Data);
+            //    //reservoir = new DryGasDeadOilReservoir(Data);
             //}
             //else if (Data.PhaseFlags.Count == 2)
             //{
-            //    if(Data.PhaseFlags.Contains("OIL") && Data.PhaseFlags.Contains("GAS"))
-            //        reservoir = new DryGasDeadOilReservoir(Data);
-            //    else if (Data.PhaseFlags.Contains("OIL") && Data.PhaseFlags.Contains("WATER"))
-            //        reservoir = new OilWaterReservoir(Data);
-            //    else  reservoir = new DryGasWaterReservoir(Data);
+            //    //if (Data.PhaseFlags.Contains("OIL") && Data.PhaseFlags.Contains("GAS"))
+            //    //    reservoir = new DryGasDeadOilReservoir(Data);
+            //    //else if (Data.PhaseFlags.Contains("OIL") && Data.PhaseFlags.Contains("WATER"))
+            //    //    reservoir = new OilWaterReservoir(Data);
+            //    //else reservoir = new DryGasWaterReservoir(Data);
             //}
             //else if (Data.PhaseFlags.Count == 1)
             //{
-            //    reservoir = Data.PhaseFlags.Contains("OIL")? 
-            //        new OilWaterReservoir(Data) : new DryGasWaterReservoir(Data);
+            //   // reservoir = Data.PhaseFlags.Contains("OIL") ?
+            //    //    new OilWaterReservoir(Data) : new DryGasWaterReservoir(Data);
             //}
-            //else 
+            //else
             //{
-            //   throw new NotSupportedException("Unsupported phase configuration in the Eclipse data deck.");
+            //    throw new NotSupportedException("Unsupported phase configuration in the Eclipse data deck.");
             //}
         }
 

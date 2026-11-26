@@ -145,7 +145,7 @@ namespace ReservoirSimulator
             double[] po = new double[numActiveGrids];
             double[] pw = new double[numActiveGrids];
             double[] pg = new double[numActiveGrids];
-            double[] pb = new double[numActiveGrids];
+            double[] rs = new double[numActiveGrids];
             double[] sw = new double[numActiveGrids];
             double[] so = new double[numActiveGrids];
             double[] sg = new double[numActiveGrids];
@@ -177,7 +177,7 @@ namespace ReservoirSimulator
                 po[cell] = grid.Po_n;
                 pw[cell] = grid.Pw_n;
                 pg[cell] = grid.Pg_n;
-                pb[cell] = grid.Pb_n;
+                rs[cell] = grid.Rs_n;
                 sw[cell] = grid.Sw_n;
                 so[cell] = grid.So_n;
                 sg[cell] = grid.Sg_n;
@@ -197,7 +197,7 @@ namespace ReservoirSimulator
             long offPw = offPo + 4 + (long)po.Length * sizeof(double);
             long offPg = offPw + 4 + (long)pw.Length * sizeof(double);
             long offPb = offPg + 4 + (long)pg.Length * sizeof(double);
-            long offSw = offPb + 4 + (long)pb.Length * sizeof(double);
+            long offSw = offPb + 4 + (long)rs.Length * sizeof(double);
             long offSo = offSw + 4 + (long)sw.Length * sizeof(double);
             long offSg = offSo + 4 + (long)so.Length * sizeof(double);
             long offPermX = offSg + 4 + (long)sg.Length * sizeof(double);
@@ -249,7 +249,7 @@ namespace ReservoirSimulator
             WriteRawBlock<double>(fs, po);
             WriteRawBlock<double>(fs, pw);
             WriteRawBlock<double>(fs, pg);
-            WriteRawBlock<double>(fs, pb);
+            WriteRawBlock<double>(fs, rs);
             WriteRawBlock<double>(fs, sw);
             WriteRawBlock<double>(fs, so);
             WriteRawBlock<double>(fs, sg);

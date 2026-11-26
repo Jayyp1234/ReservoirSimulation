@@ -72,20 +72,39 @@ namespace ReservoirSimulator
             return KroEndpoint * Pow(soNorm, No);
         }
 
+        //[MethodImpl(MethodImplOptions.AggressiveInlining)]
+        //public ADiff<T> EvaluatePcow<T>(ADiff<T> sw) where T : struct, IVectorND<T>
+        //{
+        //    const double eps = 1e-4;
+        //    double denom = 1.0 - Swi;
+        //    ADiff<T> swStar = (sw - Swi) / denom;
+
+        //    if (swStar.Value >= eps)
+        //        return Pd * Pow(swStar, -InvLambda);
+
+        //    // C1-continuous linear extension for swStar < eps (prevents NaN/Inf at sw <= Swi)
+        //    double pcAtEps = Pd * Pow(eps, -InvLambda);
+        //    double dPcDswStarAtEps = -Pd * InvLambda * Pow(eps, -InvLambda - 1.0);
+        //    return pcAtEps + dPcDswStarAtEps * (swStar - eps);
+        //}
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluatePcow<T>(ADiff<T> sw) where T : struct, IVectorND<T>
         {
-            const double eps = 1e-4;
+            if (PcMax <= 0.0)
+                return default; // Exact zero Pc and zero derivative when table has no capillary pressure
+
             double denom = 1.0 - Swi;
             ADiff<T> swStar = (sw - Swi) / denom;
 
-            if (swStar.Value >= eps)
-                return Pd * Pow(swStar, -InvLambda);
+            // Threshold where Brooks-Corey reaches PcMax: Pd * swCap^(-InvLambda) = PcMax
+            double swCap = Pow(Pd / PcMax, 1.0 / InvLambda);
+            if (swStar.Value <= swCap)
+                return new ADiff<T>(PcMax, default); // Flat cap at table PcMax (no 1e7 derivative spike at Swi)
 
-            // C1-continuous linear extension for swStar < eps (prevents NaN/Inf at sw <= Swi)
-            double pcAtEps = Pd * Pow(eps, -InvLambda);
-            double dPcDswStarAtEps = -Pd * InvLambda * Pow(eps, -InvLambda - 1.0);
-            return pcAtEps + dPcDswStarAtEps * (swStar - eps);
+            if (swStar.Value >= 1.0)
+                return new ADiff<T>(PcMin, default);
+
+            return Pd * Pow(swStar, -InvLambda);
         }
     }
 
@@ -168,8 +187,17 @@ namespace ReservoirSimulator
             var (nw, _, rSqW) = Utility.LinearRegression(krwX, krwY);
             var (no, _, rSqO) = Utility.LinearRegression(kroX, kroY);
 
-            double lambda = -1.0 / mPc;
-            double pd = Exp(bPc);
+            double lambda = 1.0, pd = 0.0; rSqPc = 1.0;
+            if (pcX.Count >= 2)
+            {
+                (mPc, bPc, double rSq) = Utility.LinearRegression(pcX, pcY);
+                if (mPc < -1e-12)
+                {
+                    lambda = -1.0 / mPc;
+                    pd = Exp(bPc);
+                    rSqPc = rSq;
+                }
+            }
 
 
 
