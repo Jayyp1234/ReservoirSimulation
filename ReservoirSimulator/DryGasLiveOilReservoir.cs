@@ -598,7 +598,7 @@ namespace ReservoirSimulator
         }
 
         public (double maxPd, double maxSd, double maxRsd, bool phaseSwitched) ApplyPrimaryVariableUpdate(
-            double[] x, double[] dx, int numActiveGrids, int numWells,
+            double[] x, double[] dx, double dt, int numActiveGrids, int numWells,
             double dPmax = 500.0,    // max allowable pressure change per Newton step [psi]
             double dSmax = 0.10,     // max allowable saturation change per Newton step [-]
             double dRsMax = 0.20)    // max allowable Rs change per Newton step [Mscf/stb]
@@ -625,8 +625,9 @@ namespace ReservoirSimulator
                 if (Abs(dPo) > dPmax) dPo = Sign(dPo) * dPmax;
                 double p_new = Max(14.7, p_old - dPo);
 
-                // Saturated Rs at the updated pressure (0.0 for dead oil)
+                // Saturated Rs at the updated pressure (0.0 for dead oil), capped by DRSDT if active
                 double rs_sat = grid.RsSat(p_new).Value;
+                double rs_limit = rs_sat; 
 
                 double w_new, third_new;
 
@@ -641,9 +642,9 @@ namespace ReservoirSimulator
                     w_new = Clamp(w_old - dSw, 0.0, 1.0);
                     double rs_trial = third_old - dRs;
 
-                    if (rs_sat > 0.0 && rs_trial >= rs_sat)
+                    if (rs_limit > 0.0 && rs_trial >= rs_limit)
                     {
-                        // Bubble-point crossing: Undersaturated -> Saturated
+                        // Bubble-point / DRSDT ceiling crossing: Undersaturated -> Saturated
                         grid.OilIsSaturated = true;
                         phaseSwitched = true;
 
@@ -651,12 +652,12 @@ namespace ReservoirSimulator
                         third_new = sg_init;
 
                         maxSd = Max(maxSd, sg_init);
-                        maxRsd = Max(maxRsd, Abs(rs_sat - third_old));
+                        maxRsd = Max(maxRsd, Abs(rs_limit - third_old));
                     }
                     else
                     {
-                        // Stay undersaturated (or dead oil where rs_sat == 0)
-                        third_new = rs_sat > 0.0 ? Max(0.0, rs_trial) : 0.0;
+                        // Stay undersaturated (or dead oil where rs_limit == 0)
+                        third_new = rs_limit > 0.0 ? Clamp(rs_trial, 0.0, rs_limit) : 0.0;
                         maxRsd = Max(maxRsd, Abs(third_new - third_old));
                     }
 
@@ -664,7 +665,7 @@ namespace ReservoirSimulator
                 }
                 else
                 {
-                    // Saturated two-phase state: variables are (Po, Sw, Sg), Rs = Rs_sat(Po)
+                    // Saturated two-phase state: variables are (Po, Sw, Sg), Rs = EffectiveRsSat(Po, dt)
                     double dSg = dx[idx_g];
 
                     // Direction-preserving saturation damping
@@ -685,11 +686,12 @@ namespace ReservoirSimulator
                         grid.OilIsSaturated = false;
                         phaseSwitched = true;
 
-                        double rs_init = rs_sat > 0.0 ? Max(0.0, rs_sat * (1.0 - 1e-6)) : 0.0;
+                        double rs_init = rs_limit > 0.0 ? Max(0.0, rs_limit * (1.0 - 1e-6)) : 0.0;
                         third_new = rs_init;
 
                         maxSd = Max(maxSd, Abs(w_new - w_old));
                         maxSd = Max(maxSd, third_old); // Sg went from third_old -> 0
+                        maxRsd = Max(maxRsd, Abs(rs_init - rs_limit));
                     }
                     else
                     {
@@ -731,6 +733,22 @@ namespace ReservoirSimulator
             }
 
             return (maxPd, maxSd, maxRsd, phaseSwitched);
+        }
+
+        double dRsdt = double.PositiveInfinity;
+        double dRvdt = double.PositiveInfinity;
+
+        private double GetDrsdtForStep(int stepIdx)
+        {
+            double activeRate = double.PositiveInfinity;
+            foreach (var rec in DATA.DrsdtSchedule)
+            {
+                if (rec.StepIndex <= stepIdx)
+                    activeRate = rec.MaxRate;
+                else
+                    break;
+            }
+            return activeRate;
         }
 
         public void Simulate(double[] ResultTime = null)
@@ -1292,7 +1310,6 @@ namespace ReservoirSimulator
                 return MaxCNV;
             }
 
-
             double t = 0.0, dt = 0.1, dtCarry = 0.1;
             DateTime startDate = DATA.StartDate, currentSimDate;
             List<DateTime> Interval = [.. new DateTime[] { startDate }
@@ -1333,6 +1350,11 @@ namespace ReservoirSimulator
 
                         foreach (var well in Wells)
                             well.UpdateCompletion(currentSimDate);
+
+                        double cumt = 0.0;
+                        int stepIdx = DATA.TimeSteps.FindIndex(dt => (cumt += dt) >= tnp1 - 1e-9);
+                        if (stepIdx < 0) stepIdx = DATA.TimeSteps.Count - 1;
+                        dRsdt = GetDrsdtForStep(stepIdx);
                     }
 
                     // Prepare initial guess x^(0) from converged state n
@@ -1372,7 +1394,7 @@ namespace ReservoirSimulator
 
                         // Update primary variables: x^{k+1} = x^k - dx
                         (maxDPo, maxDSw, maxDRs, phaseSwitched) =
-                            ApplyPrimaryVariableUpdate(xs, dx, NumActiveGrids, NumWells);
+                            ApplyPrimaryVariableUpdate(xs, dx, dt, NumActiveGrids, NumWells);
                     }
 
                     // Cut dt on Newton non-convergence

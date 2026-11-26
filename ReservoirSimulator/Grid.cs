@@ -201,7 +201,8 @@ namespace ReservoirSimulator
         public (int i, int j, int k) IJKIndex { get; set; }
         internal Vector3d[] Corners { get; set; } = [];
         internal Vector3d Center { get; set; }
-
+        public bool HasDrsdtLimit { get; internal set; }
+        public string DrsdtOption { get; internal set; }
 
         public List<double> PO = [], PW = [], PG = [], SW = [], SO = [], SG = [], PB = [], PD = [];
 
