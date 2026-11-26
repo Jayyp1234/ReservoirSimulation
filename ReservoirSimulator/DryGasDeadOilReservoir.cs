@@ -160,7 +160,158 @@ namespace ReservoirSimulator
             double MaxZ = Grids.Max(grid => grid.Center.Z);
             double MinZ = Grids.Min(grid => grid.Center.Z);
 
-            
+
+            for (int e = 0; e < EQUILs.Length; e++)
+            {
+                for (int p = 0; p < PVDOs.Length; p++)
+                {
+                    var equil = EQUILs[e];
+                    var pvdo = PVDOs[p];
+                    var pvtw = PVTWs[p];
+                    var pvdg = PVDGs[p];
+
+                    Func<double, double> γg = P => γg0 / pvdg.Result.EvaluateBg(P);
+                    Func<double, double> γo = P => γo0 / pvdo.Result.EvaluateBo(P);
+                    Func<double, double> γw = P => γw0 / pvtw.Result.EvaluateBw(P);
+
+                    // Gas cap gradient (updated for VAPOIL): dPg/dz = c * γgpr(p, Rvzp(z, p))
+                    double GasGrad(double z, double p) => γg(p);
+
+                    // Oil leg gradient (existing): dPo/dz = c * γopr(p, Rszp(z, p))
+                    double OilGrad(double z, double p) => γo(p);
+
+                    // Water leg gradient (existing): dPw/dz = c * γwpr(p)
+                    double WaterGrad(double z, double p) => γw(p);
+
+                    var equildata = new EQUILPressureDepth(equil);
+                    double zSpan = Max(1.0, MaxZ - MinZ);
+
+                    int StepsFor(double z1, double z2, int scale = 1) =>
+                        Max(10, (int)(Abs(z1 - z2) / zSpan * Nz * scale));
+
+                    // 1. Resolve Po, Pw, Pg at ZGOC and ZWOC starting from (ZDatum, PDatum)
+                    //    Note: IntegrateLegRK4 returns pairs sorted by ascending Z, so upward legs
+                    //    (zEnd < zStart) have their target pressure at First().P, while downward legs have Last().P.
+                    if (equildata.ZDatum <= equildata.ZGOC)
+                    {
+                        // Datum in gas cap -> integrate gas down to ZGOC, then oil down to ZWOC
+                        var gas2GOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZGOC,
+                            StepsFor(equildata.ZDatum, equildata.ZGOC, 10), GasGrad);
+                        equildata.PgGOC = gas2GOC.Last().P;
+                        equildata.PoGOC = equildata.PgGOC - equildata.PcGOC;
+
+                        var oilGOC2WOC = Utility.IntegrateLegRK4(equildata.ZGOC, equildata.PoGOC, equildata.ZWOC,
+                            StepsFor(equildata.ZGOC, equildata.ZWOC, 10), OilGrad);
+                        equildata.PoWOC = oilGOC2WOC.Last().P;
+                        equildata.PwWOC = equildata.PoWOC - equildata.PcWOC;
+                    }
+                    else if (equildata.ZDatum < equildata.ZWOC)
+                    {
+                        // Datum in oil zone -> integrate oil UP to ZGOC (First().P) and DOWN to ZWOC (Last().P)
+                        var oil2GOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZGOC,
+                            StepsFor(equildata.ZDatum, equildata.ZGOC, 10), OilGrad);
+                        equildata.PoGOC = oil2GOC.First().P;
+                        equildata.PgGOC = equildata.PoGOC + equildata.PcGOC;
+
+                        var oil2WOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZWOC,
+                            StepsFor(equildata.ZDatum, equildata.ZWOC, 10), OilGrad);
+                        equildata.PoWOC = oil2WOC.Last().P;
+                        equildata.PwWOC = equildata.PoWOC - equildata.PcWOC;
+                    }
+                    else
+                    {
+                        // Datum in water zone -> integrate water UP to ZWOC (First().P), then oil UP to ZGOC (First().P)
+                        var water2WOC = Utility.IntegrateLegRK4(equildata.ZDatum, equildata.PDatum, equildata.ZWOC,
+                            StepsFor(equildata.ZDatum, equildata.ZWOC, 10), WaterGrad);
+                        equildata.PwWOC = water2WOC.First().P;
+                        equildata.PoWOC = equildata.PwWOC + equildata.PcWOC;
+
+                        var oilWOC2GOC = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PoWOC, equildata.ZGOC,
+                            StepsFor(equildata.ZWOC, equildata.ZGOC, 10), OilGrad);
+                        equildata.PoGOC = oilWOC2GOC.First().P;
+                        equildata.PgGOC = equildata.PoGOC + equildata.PcGOC;
+                    }
+
+                    // 2. Gas Cap Leg: Z from MinZ down to ZGOC (only if MinZ < ZGOC)
+                    if (MinZ < equildata.ZGOC)
+                    {
+                        double pwAtGOC = equildata.PwWOC;
+                        if (equildata.ZGOC < equildata.ZWOC)
+                        {
+                            // Upward integration from ZWOC -> ZGOC: target pressure is First().P
+                            var watGOC = Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PwWOC, equildata.ZGOC,
+                                StepsFor(equildata.ZGOC, equildata.ZWOC, 10), WaterGrad);
+                            pwAtGOC = watGOC.First().P;
+                        }
+
+                        int nGas = StepsFor(MinZ, equildata.ZGOC);
+                        // Already returned in ascending Z order [MinZ .. ZGOC] — do NOT reverse
+                        var gasUp = Utility.IntegrateLegRK4(equildata.ZGOC, equildata.PgGOC, MinZ, nGas, GasGrad);
+                        var oilUp = Utility.IntegrateLegRK4(equildata.ZGOC, equildata.PoGOC, MinZ, nGas, OilGrad);
+                        var watUp = Utility.IntegrateLegRK4(equildata.ZGOC, pwAtGOC, MinZ, nGas, WaterGrad);
+
+                        equildata.GasZonePressureDepthPairs.AddRange(gasUp);
+                        equildata.OilZonePressureDepthPairs.AddRange(oilUp);
+                        equildata.WaterZonePressureDepthPairs.AddRange(watUp);
+                    }
+
+                    // 3. Oil Leg: Z from zOilTop down to zOilBot (only if zOilTop < zOilBot)
+                    double zOilTop = Max(MinZ, equildata.ZGOC);
+                    double zOilBot = Min(MaxZ, equildata.ZWOC);
+                    if (zOilTop < zOilBot)
+                    {
+                        double poAtOilTop = zOilTop > equildata.ZGOC
+                            ? Utility.IntegrateLegRK4(equildata.ZGOC, equildata.PoGOC, zOilTop,
+                                StepsFor(equildata.ZGOC, zOilTop, 10), OilGrad).Last().P
+                            : equildata.PoGOC;
+
+                        // Upward integration from ZWOC -> zOilBot: target pressure is First().P
+                        double pwAtOilBot = zOilBot < equildata.ZWOC
+                            ? Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PwWOC, zOilBot,
+                                StepsFor(zOilBot, equildata.ZWOC, 10), WaterGrad).First().P
+                            : equildata.PwWOC;
+
+                        int nOil = StepsFor(zOilTop, zOilBot);
+                        var oilMid = Utility.IntegrateLegRK4(zOilTop, poAtOilTop, zOilBot, nOil, OilGrad);
+                        var watMid = Utility.IntegrateLegRK4(zOilBot, pwAtOilBot, zOilTop, nOil, WaterGrad);
+
+                        // Below ZGOC there is no free gas (Sg = 0): Pg tracks Po + PcGOC
+                        var gasMid = oilMid.Select(pz => new PressureDepthPair(pz.Z, pz.P + equildata.PcGOC));
+
+                        int skip = equildata.OilZonePressureDepthPairs.Count > 0 ? 1 : 0;
+                        equildata.OilZonePressureDepthPairs.AddRange(oilMid.Skip(skip));
+                        equildata.WaterZonePressureDepthPairs.AddRange(watMid.Skip(skip));
+                        equildata.GasZonePressureDepthPairs.AddRange(gasMid.Skip(skip));
+                    }
+
+                    // 4. Water Leg: Z from zWatTop down to MaxZ (only if zWatTop < MaxZ)
+                    double zWatTop = Max(MinZ, equildata.ZWOC);
+                    if (zWatTop < MaxZ)
+                    {
+                        double pwAtWatTop = zWatTop > equildata.ZWOC
+                            ? Utility.IntegrateLegRK4(equildata.ZWOC, equildata.PwWOC, zWatTop,
+                                StepsFor(equildata.ZWOC, zWatTop, 10), WaterGrad).Last().P
+                            : equildata.PwWOC;
+
+                        int nDown = StepsFor(zWatTop, MaxZ);
+                        var watDown = Utility.IntegrateLegRK4(zWatTop, pwAtWatTop, MaxZ, nDown, WaterGrad);
+
+                        // Below ZWOC mobile oil/gas vanish (Sw = 1 - Sor): Po = Pw + PcWOC, Pg = Po + PcGOC
+                        var oilDown = watDown.Select(pz => new PressureDepthPair(pz.Z, pz.P + equildata.PcWOC));
+                        var gasDown = oilDown.Select(pz => new PressureDepthPair(pz.Z, pz.P + equildata.PcGOC));
+
+                        int skip = equildata.WaterZonePressureDepthPairs.Count > 0 ? 1 : 0;
+                        equildata.WaterZonePressureDepthPairs.AddRange(watDown.Skip(skip));
+                        equildata.OilZonePressureDepthPairs.AddRange(oilDown.Skip(skip));
+                        equildata.GasZonePressureDepthPairs.AddRange(gasDown.Skip(skip));
+                    }
+
+                    EquilPVTCombinations[(e, p)] = equildata;
+                }
+            }
+
+
+
             // WELLS
             Wells = [.. Data.Wells.Select(well => new Well<Vector6d>(well.Value, Nx, Ny, Nz, Grids, incomingUnit))];
             foreach (var well in Wells.Where(w => w.PerfNatIndex.Count == 0))

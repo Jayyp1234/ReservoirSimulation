@@ -258,12 +258,11 @@ namespace ReservoirSimulator
                         return Min(rs, rssat);
                     }
 
+                    // Gas cap gradient (updated for VAPOIL): dPg/dz = c * γgpr(p, Rvzp(z, p))
+                    double GasGrad(double z, double p) => γg(p);
 
                     // Oil leg gradient (existing): dPo/dz = c * γopr(p, Rszp(z, p))
                     double OilGrad(double z, double p) => γopr(p, Rszp(z, p));
-
-                    // Gas cap gradient (updated for VAPOIL): dPg/dz = c * γgpr(p, Rvzp(z, p))
-                    double GasGrad(double z, double p) => γg(p);
 
                     // Water leg gradient (existing): dPw/dz = c * γwpr(p)
                     double WaterGrad(double z, double p) => γw(p);
@@ -391,7 +390,6 @@ namespace ReservoirSimulator
                         equildata.OilZonePressureDepthPairs.AddRange(oilDown.Skip(skip));
                         equildata.GasZonePressureDepthPairs.AddRange(gasDown.Skip(skip));
                     }
-
                     EquilPVTCombinations[(e, p)] = equildata;
                 }
             }

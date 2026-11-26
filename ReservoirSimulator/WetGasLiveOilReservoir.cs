@@ -332,11 +332,11 @@ namespace ReservoirSimulator
                         return Min(rv, rvsat);
                     }
 
-                    // Oil leg gradient (existing): dPo/dz = c * γopr(p, Rszp(z, p))
-                    double OilGrad(double z, double p) => γopr(p, Rszp(z, p));
-
                     // Gas cap gradient (updated for VAPOIL): dPg/dz = c * γgpr(p, Rvzp(z, p))
                     double GasGrad(double z, double p) => γgpr(p, Rvzp(z, p));
+
+                    // Oil leg gradient (existing): dPo/dz = c * γopr(p, Rszp(z, p))
+                    double OilGrad(double z, double p) => γopr(p, Rszp(z, p));
 
                     // Water leg gradient (existing): dPw/dz = c * γwpr(p)
                     double WaterGrad(double z, double p) => γw(p);
