@@ -7,10 +7,11 @@ using static ReservoirSimulator.Math;
 
 namespace ReservoirSimulator
 {
-    public readonly struct PvdoResult(double pRef, double co, double boAtPref, double cMu,
+    public readonly struct PvdoResult(double γo0, double pRef, double co, double boAtPref, double cMu,
                       double viscAtPref, double boRSquared, double viscRSquared)
     {
         // Raw Regression Coefficients & Diagnostic Parameters
+        public readonly double γo0 = γo0;
         public readonly double PRef = pRef;
         public readonly double Co = co;
         public readonly double BoAtPref = boAtPref;
@@ -52,7 +53,7 @@ namespace ReservoirSimulator
 
         public PvdoResult Result { get; private set; }
 
-        public void FitProperties()
+        public void FitProperties(double γo0)
         {
             if (pvdoTable == null || pvdoTable.Count < 2)
             {
@@ -90,7 +91,7 @@ namespace ReservoirSimulator
             double cMu = mVisc;                    // Viscosity increases with P -> c_mu is slope
             double viscAtPref = Exp(bVisc);        // e^intercept_Visc
 
-            Result = new(pRef, co, boAtPref, cMu, viscAtPref, rSqBo, rSqVisc);
+            Result = new(γo0, pRef, co, boAtPref, cMu, viscAtPref, rSqBo, rSqVisc);
         }
     }
 }

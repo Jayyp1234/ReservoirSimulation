@@ -7,13 +7,14 @@ using static ReservoirSimulator.Math;
 
 namespace ReservoirSimulator
 {
-    public readonly struct PvtgResult(
+    public readonly struct PvtgResult(double γg0,
         double rvBase, double rvExponent, double rvRSquared,
         double bgBase, double bgExponent, double bgRSquared,
         double viscBase, double viscSlope, double viscRSquared,
         double undersatBgSlope = 0.0, double undersatViscSlope = 0.0)
     {
         // Raw Coefficients held as raw fields (Blittable, ultra-lean)
+        public readonly double γg0 = γg0;
         public readonly double RvBase = rvBase;
         public readonly double RvExponent = rvExponent;
         public readonly double RvRSquared = rvRSquared;
@@ -34,12 +35,27 @@ namespace ReservoirSimulator
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluateRv<T>(ADiff<T> p) where T : struct, IVectorND<T>
         {
+            if (p.Value <= 0.0 || RvBase <= 0.0)
+                return default;
+
             return RvBase * Pow(p, RvExponent);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ADiff<T> EvaluateDewPointPressure<T>(ADiff<T> rv) where T : struct, IVectorND<T>
+        {
+            if (rv.Value <= 0.0 || RvBase <= 0.0 || Abs(RvExponent) < 1e-12)
+                return default;
+
+            return Pow(rv / RvBase, 1.0 / RvExponent);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ADiff<T> EvaluateBg<T>(ADiff<T> p) where T : struct, IVectorND<T>
         {
+            if (p.Value <= 0.0 || BgBase <= 0.0)
+                return default;
+
             return BgBase * Pow(p, -BgExponent);
         }
 

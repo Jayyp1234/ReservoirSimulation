@@ -5,9 +5,10 @@ using static ReservoirSimulator.PVTWAnalysis;
 
 namespace ReservoirSimulator
 {
-    public readonly struct PvtwResult(double Pref, double Bwref, double cw, double Muref,
+    public readonly struct PvtwResult(double γw0, double Pref, double Bwref, double cw, double Muref,
                                           double vw, double bwRSquared, double viscGRSquared)
     {
+        public readonly double γw0 = γw0;
         public readonly double PRef = Pref;
         public readonly double Cw = cw;
         public readonly double BwAtPref = Bwref;
@@ -51,9 +52,9 @@ namespace ReservoirSimulator
         private readonly PvtwRow pvtwRow = new(_pvtw[0], _pvtw[1], _pvtw[2], _pvtw[3], _pvtw[4], incomingUnit);
 
         public PvtwResult Result { get; private set; }
-        public void FitProperties()
+        public void FitProperties(double γw0)
         {
-            Result = new(pvtwRow.Pref, pvtwRow.Bwref, pvtwRow.Cw, pvtwRow.Visref, pvtwRow.Vw, 1, 1);
+            Result = new(γw0, pvtwRow.Pref, pvtwRow.Bwref, pvtwRow.Cw, pvtwRow.Visref, pvtwRow.Vw, 1, 1);
         }
     }
 }

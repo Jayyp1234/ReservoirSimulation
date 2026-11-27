@@ -1,12 +1,10 @@
 ﻿namespace ReservoirSimulator
 {
-    internal class Jacobian
+   public enum CellPhaseState
     {
-        public List<double> Value = [];
-        public List<int> Index = [];
-        public List<int> Start = [0];
-        public Jacobian Duplicate() =>
-            new() { Value = [.. Value], Index = [.. Index], Start = [.. Start] };
+        TwoPhaseOilGas,
+        UnderSaturatedOil,
+        UnderSaturatedGas,
     }
 
     public enum WellStatus

@@ -4,13 +4,14 @@ using static ReservoirSimulator.Math;
 
 namespace ReservoirSimulator
 {
-    public readonly struct PvtoResult(
+    public readonly struct PvtoResult(double γo0,
         double rsBase, double rsExponent, double rsRSquared,
         double boBase, double boExponent, double boRSquared,
         double viscBase, double viscExponent, double viscRSquared,
         double undersatCompressibility = 0.0, double undersatViscosibility = 0.0)
     {
         // Raw Coefficients held as raw fields (Blittable, ultra-lean)
+        public readonly double γo0 = γo0;
         public readonly double RsBase = rsBase;
         public readonly double RsExponent = rsExponent;
         public readonly double RsRSquared = rsRSquared;
@@ -57,6 +58,22 @@ namespace ReservoirSimulator
         {
             return ViscBase * Exp(-ViscExponent * rs);
         }
+        // 2D Undersaturated Oil Extensions: (P, Rs) where P >= Pbub(Rs)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ADiff<T> EvaluateBo<T>(ADiff<T> p, ADiff<T> rs) where T : struct, IVectorND<T>
+        {
+            ADiff<T> boSat = EvaluateBo(rs);
+            ADiff<T> pExcess = p - EvaluateBubblePointPressure(rs); // 0 on bubble-point curve, > 0 when undersaturated
+            return boSat * Exp(-UndersatCompressibility * pExcess);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ADiff<T> EvaluateMuo<T>(ADiff<T> p, ADiff<T> rs) where T : struct, IVectorND<T>
+        {
+            ADiff<T> muoSat = EvaluateMuo(rs);
+            ADiff<T> pExcess = p - EvaluateBubblePointPressure(rs);
+            return muoSat * Exp(UndersatViscosibility * pExcess);
+        }
     }
 
     public class PvtoRow(double rs, double pressure, double bo, double viscosity, Units incomingUnit)
@@ -100,7 +117,7 @@ namespace ReservoirSimulator
 
         public PvtoResult Result { get; private set; }
 
-        public void FitProperties()
+        public void FitProperties(double γo0)
         {
             if (saturatedPoints.Count < 2)
             {
@@ -171,7 +188,7 @@ namespace ReservoirSimulator
                 }
             }
 
-            Result = new PvtoResult(
+            Result = new PvtoResult(γo0,
                 lnPressureForRs.Count >= 2 ? Exp(bRs) : 0.0, mRs, rSqRs,
                 Exp(bBo), mBo, rSqBo,
                 Exp(bVisc), -mVisc, rSqVisc,

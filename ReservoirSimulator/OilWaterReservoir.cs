@@ -87,13 +87,19 @@ namespace ReservoirSimulator
             Grids = Zcorn is not null ? Utility.ProcessGrid<Vector4d>(Nx, Ny, Nz, Coord, Zcorn, Φ, Kx, Ky, Kz, ntg, multpv) :
                 Utility.ProcessGrid<Vector4d>(Nx, Ny, Nz, Dx, Dy, Dz, zTop, Φ, Kx, Ky, Kz, ntg, multpv);
 
+
+            // DENSITIES
+            γo0 = Utility.Convert(Data.SurfaceOilDensity, "Density", incomingUnit, Units.FIELD) / 144;
+            γw0 = Utility.Convert(Data.SurfaceWaterDensity, "Density", incomingUnit, Units.FIELD) / 144;
+
+
             // Process PVTW and PVDO tables.
             PVTWs = [.. Data.RawPvtwTables.Select(pvtw => new PVTWAnalysis(pvtw, incomingUnit))];
             PVDOs = [.. Data.RawPvdoTables.Select(pvdo => new PVDOAnalysis(pvdo, incomingUnit))];
             for (int i = 0; i < PVTWs.Length; i++)
             {
-                PVTWs[i].FitProperties();
-                PVDOs[i].FitProperties();
+                PVTWs[i].FitProperties(γw0);
+                PVDOs[i].FitProperties(γo0);
             }
 
             // Process SWOF tables.
@@ -107,10 +113,6 @@ namespace ReservoirSimulator
             cr = Data.RockCompressibility;
             Prefr = Utility.Convert(Data.RockReferencePressure, "Pressure", incomingUnit, Units.FIELD);
             Er = P => Exp(cr * (P - Prefr));
-
-            // DENSITIES
-            γo0 = Utility.Convert(Data.SurfaceOilDensity, "Density", incomingUnit, Units.FIELD) / 144;
-            γw0 = Utility.Convert(Data.SurfaceWaterDensity, "Density", incomingUnit, Units.FIELD) / 144;
 
             // MINPV: cells holding less pore volume than the deck's minimum are made inactive, as in ECLIPSE.
             // A copy of ACTNUM is changed, so the deck itself keeps what the user wrote.

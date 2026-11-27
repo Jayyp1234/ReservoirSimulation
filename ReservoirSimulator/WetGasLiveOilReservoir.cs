@@ -312,7 +312,7 @@ namespace ReservoirSimulator
                     double γgpr(double P, double RvVal)
                     {
                         var (bg, rvEff) = EvaluateGasState(P, RvVal);
-                        return (1000.0 * γg0 + rvEff * γo0) / bg;
+                        return (178.1076 * γg0 + rvEff * γo0) / bg;
                     }
 
                     double Rszp(double Z, double P)
@@ -600,6 +600,7 @@ namespace ReservoirSimulator
                 well.SaveResult(pwf: well.Pwf_n, qo: well.Qo_n, qw: well.Qw_n, qg: well.Qg_n);
             }
         }
+
         void InitialGuess(double[] xs, double dt, bool isRetry = false, bool wellEventOccurred = false)
         {
             int indx = 0, n = Time.Count - 1;

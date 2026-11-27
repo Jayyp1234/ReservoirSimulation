@@ -4,9 +4,10 @@ using static ReservoirSimulator.Math;
 
 namespace ReservoirSimulator
 {
-    public readonly struct PvdgResult(double pRef, double bgBase, double bgExponent,
+    public readonly struct PvdgResult(double γg0, double pRef, double bgBase, double bgExponent,
     double cMug, double viscGAtPref, double rSqBg, double rSqViscG)
     {
+        public readonly double γg0 = γg0;
         public readonly double PRef = pRef;
         public readonly double BgBase = bgBase;
         public readonly double BgExponent = bgExponent;
@@ -55,7 +56,7 @@ namespace ReservoirSimulator
 
         public PvdgResult Result { get; private set; }
 
-        public void FitProperties()
+        public void FitProperties(double γg0)
         {
             if (pvdgTable == null || pvdgTable.Count < 2)
                 throw new ArgumentException("PVDG table requires at least 2 rows.");
@@ -85,7 +86,7 @@ namespace ReservoirSimulator
             // Exponential fit for gas viscosity: ln(Mug) = ln(ViscGAtPref) + cMug * (P - pRef)
             var (mViscG, bViscG, rSqViscG) = Utility.LinearRegression(deltaP, lnViscG);
 
-            Result = new(pRef, Exp(bBg), mBg, mViscG, Exp(bViscG), rSqBg, rSqViscG);
+            Result = new(γg0, pRef, Exp(bBg), mBg, mViscG, Exp(bViscG), rSqBg, rSqViscG);
         }
     }
 }

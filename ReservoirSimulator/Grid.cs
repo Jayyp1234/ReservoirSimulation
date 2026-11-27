@@ -13,6 +13,7 @@ namespace ReservoirSimulator
         const double alpha = 1.127e-3, beta = 5.615;
         public bool LogResult { get; set; }
         public bool isActive { get { return ActiveIndex >= 0; } }
+        public CellPhaseState PhaseState { get; set; } = CellPhaseState.TwoPhaseOilGas;
         public bool OilIsSaturated { get; set; } = false;
         public bool GasIsSaturated { get; set; } = false;
         public double NTG { get; set; }
@@ -85,7 +86,7 @@ namespace ReservoirSimulator
                 pvdg = value;
                 Bg = Po => pvdg.Result.EvaluateBg(Po);
                 μg = Po => pvdg.Result.EvaluateMug(Po);
-                γg = Po => γg0 / pvdg.Result.EvaluateBg(Po);
+                γg = Po => pvdg.Result.γg0 / pvdg.Result.EvaluateBg(Po);
             } 
         }
         public PVTOAnalysis PVTO
@@ -94,7 +95,9 @@ namespace ReservoirSimulator
             set
             {
                 pvto = value;
+                BoSat = Rs => pvto.Result.EvaluateBo(Rs);
                 RsSat = Po => pvto.Result.EvaluateRs(Po);
+                Pb = Rs => pvto.Result.EvaluateBubblePointPressure(Rs);
             }
         }
         public PVTGAnalysis PVTG 
@@ -103,7 +106,9 @@ namespace ReservoirSimulator
             set 
             { 
                 pvtg = value;
-                RvSat = Po => pvtg.Result.EvaluateRv(Po);
+                BgSat = Pg => pvtg.Result.EvaluateBg(Pg);
+                RvSat = Pg => pvtg.Result.EvaluateRv(Pg);
+                Pd = Rv => pvtg.Result.EvaluateDewPointPressure(Rv);
             } 
         }
         public RSVDAnalysis RSVD 
@@ -140,7 +145,7 @@ namespace ReservoirSimulator
         public double Po_n, Pw_n, Pg_n, Sw_n, So_n, Sg_n, Rs_n, Rv_n, ErSo_Bo_n, ErSw_Bw_n, ErSg_Bg_n, WI, γo0, γw0, γg0;
         public double Po_np1, Pw_np1, Pg_np1, Sw_np1, So_np1, Sg_np1, Rs_np1, Rv_np1, Bo_np1, Bw_np1, Bg_np1;
         public ADiff<T> ErSo_Bo_np1, ErSw_Bw_np1, ErSg_Bg_np1;
-        public Func<ADiff<T>, ADiff<T>> Krw, Krow, Krg, Krog, Pcow, Pcog, Pcgw, Bo, Bw, Bg, μo, μw, μg, γo, γw, γg, Er, RsSat, RvSat;
+        public Func<ADiff<T>, ADiff<T>> Krw, Krow, Krg, Krog, Pcow, Pcog, Pcgw, Bo, Bw, Bg, μo, μw, μg, γo, γw, γg, Er, RsSat, BoSat, Pb, RvSat, BgSat, Pd;
         public Func<double, double> Rsvd, Rvvd;
         
         // Baker's 3-phase relative permeability (smooth everywhere on the Sw-Sg triangle)
@@ -159,43 +164,92 @@ namespace ReservoirSimulator
         }
         public ADiff<T> γopr(ADiff<T> p, ADiff<T> rs)
         {
-            return (γo0 + 178.1076 * rs * γg0) / Bopr(p, rs);
+            var (bo, rsEff) = EvaluateOilState(p, rs);
+            return (γo0 + 178.1076 * rsEff * γg0) / bo;
         }
         public ADiff<T> μopr(ADiff<T> p, ADiff<T> rs)
         {
-            if (pvto.Result.RsBase <= 0.0)
-                return pvto.Result.ViscBase * Exp(pvto.Result.UndersatViscosibility * Max(0.0, p - 14.7));
-
-            ADiff<T> pb = EvaluateBubblePointPressure(rs);
-            if (p.Value <= pb.Value)
-                return pvto.Result.EvaluateMuo(RsSat(p));
-
-            ADiff<T> muSat = pvto.Result.EvaluateMuo(rs);
-            return muSat * Exp(pvto.Result.UndersatViscosibility * (p - pb));
+            var (bo, rsEff) = EvaluateOilState(p, rs);
+            return pvto.Result.EvaluateMuo(p, rsEff);
         }
         public ADiff<T> Bopr(ADiff<T> p, ADiff<T> rs)
         {
-            if (pvto.Result.RsBase <= 0.0)
-                return pvto.Result.BoBase * Exp(-pvto.Result.UndersatCompressibility * Max(0.0, p - 14.7));
-
-            ADiff<T> pb = EvaluateBubblePointPressure(rs);
-            if (p.Value <= pb.Value)
-                return EvaluateBo(RsSat(p));
-
-            ADiff<T> boSat = EvaluateBo(rs);
-            return boSat * Exp(-pvto.Result.UndersatCompressibility * (p - pb));
+            var (bo, rsEff) = EvaluateOilState(p, rs);
+            return bo;
         }
-        ADiff<T> EvaluateBo (ADiff<T> rs)
+        public ADiff<T> γgpr(ADiff<T> p, ADiff<T> rv)
         {
-            return pvto.Result.BoBase * Exp(pvto.Result.BoExponent * rs);
+            var (bg, rvEff) = EvaluateGasState(p, rv);
+            return (178.1076 * γg0 + rvEff * γo0) / bg;
         }
-        public ADiff<T> EvaluateBubblePointPressure(ADiff<T> rs) 
+        public ADiff<T> μgpr(ADiff<T> p, ADiff<T> rv)
         {
-            if (rs.Value <= 0.0 || pvto.Result.RsBase <= 0.0)
-                return default;
-
-            return Pow(rs / pvto.Result.RsBase, 1.0 / pvto.Result.RsExponent);
+            var (bg, rvEff) = EvaluateGasState(p, rv);
+            return pvtg.Result.EvaluateMug(p, rvEff);
         }
+        public ADiff<T> Bgpr(ADiff<T> p, ADiff<T> rv)
+        {
+            var (bg, rvEff) = EvaluateGasState(p, rv);
+            return bg;
+        }
+
+        (ADiff<T> Bg, ADiff<T> RvEff) EvaluateGasState(ADiff<T> P, ADiff<T> Rv)
+        {
+            double RvBase = pvtg.Result.RvBase;
+            double BgBase = pvtg.Result.BgBase;
+            double BgExponent = pvtg.Result.BgExponent;
+            double UndersatBgSlope = pvtg.Result.UndersatBgSlope;
+
+            if (P <= 0.0 || BgBase <= 0.0)
+                return (0.0, 0.0);
+
+            // Dry gas (RvBase <= 0)
+            if (RvBase <= 0.0)
+                return (BgBase * Pow(P, -BgExponent), 0.0);
+
+            // Wet gas (PVTG): clamp Rv to RvSat(P) if P <= Pd(Rv) (i.e., RvVal >= RvSat(P))
+            ADiff<T> rvSat = RvSat(P), bgSat = BgSat(P);
+            if (Rv >= rvSat)
+            {
+                return (bgSat, rvSat);
+            }
+            else
+            {
+                ADiff<T> rvDeficit = rvSat - Rv; // > 0 when undersaturated
+                ADiff<T> bgUndersat = bgSat * Exp(-UndersatBgSlope * rvDeficit);
+                return (bgUndersat, Rv);
+            }
+        }
+
+        (ADiff<T> Bo, ADiff<T> RsEff) EvaluateOilState(ADiff<T> P, ADiff<T> Rs)
+        {
+            double RsBase = pvto.Result.RsBase;
+            double BoBase = pvto.Result.BoBase;
+            double BoExponent = pvto.Result.BoExponent;
+            double UndersatCompressibility = pvto.Result.UndersatCompressibility;
+
+            // Dead oil (PVDO)
+            if (RsBase <= 0.0)
+            {
+                ADiff<T> boDead = BoBase * Exp(-UndersatCompressibility * Max(0.0, P - 14.7));
+                return (boDead, 0.0);
+            }
+
+            // Live oil (PVTO): clamp Rs to RsSat(P) if P <= Pb(Rs)
+            ADiff<T> pb = Pb(Rs);
+            if (P <= pb)
+            {
+                ADiff<T> rsSat = RsSat(P), boSat = BoSat(P);
+                return (boSat, rsSat);
+            }
+            else
+            {
+                ADiff<T> boAtPb = BoBase * Exp(BoExponent * Rs);
+                ADiff<T> boUndersat = boAtPb * Exp(-UndersatCompressibility * (P - pb));
+                return (boUndersat, Rs);
+            }
+        }
+
         public int ActiveIndex { get; set; } = -1;
         public int GlobalIndex { get; set; } = -1;
         public (int i, int j, int k) IJKIndex { get; set; }
