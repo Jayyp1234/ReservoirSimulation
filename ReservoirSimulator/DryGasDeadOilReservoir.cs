@@ -42,6 +42,8 @@ namespace ReservoirSimulator
         public List<Grid<Vector6d>> ActiveGrids;
         public List<Well<Vector6d>> Wells;
         Aquifer Aquifer;
+        public List<FetkovichAquifer> Aquifers = [];
+        Dictionary<int, (FetkovichAquifer Aquifer, double Weight, double Depth)[]> aquiferAt = [];
         Dictionary<(int, int), EQUILPressureDepth> EquilPVTCombinations = [];
         EclipseDataDeck DATA;
         PVTWAnalysis[] PVTWs;
@@ -91,15 +93,22 @@ namespace ReservoirSimulator
             Grids = Zcorn is not null ? Utility.ProcessGrid<Vector6d>(Nx, Ny, Nz, Coord, Zcorn, Φ, Kx, Ky, Kz, ntg, multpv) :
                 Utility.ProcessGrid<Vector6d>(Nx, Ny, Nz, Dx, Dy, Dz, zTop, Φ, Kx, Ky, Kz, ntg, multpv);
 
+            const double SCF_PER_MSCF = 1000.0;
+            const double FT3_PER_BBL = 5.614583;
+            // DENSITIES -> Gradients [psi/ft * (rb/stb) for oil & water; psi/ft * (rb/Mscf) for gas]
+            γo0 = Utility.Convert(Data.SurfaceOilDensity, "Density", incomingUnit, Units.FIELD) / 144.0;
+            γw0 = Utility.Convert(Data.SurfaceWaterDensity, "Density", incomingUnit, Units.FIELD) / 144.0;
+            γg0 = (Utility.Convert(Data.SurfaceGasDensity, "Density", incomingUnit, Units.FIELD) / 144.0) * (SCF_PER_MSCF / FT3_PER_BBL);
+
             // Process PVTW, PVDO, and PVDG tables.
             PVTWs = [.. Data.RawPvtwTables.Select(pvtw => new PVTWAnalysis(pvtw, incomingUnit))];
             PVDOs = [.. Data.RawPvdoTables.Select(pvdo => new PVDOAnalysis(pvdo, incomingUnit))];
             PVDGs = [.. Data.RawPvdgTables.Select(pvdg => new PVDGAnalysis(pvdg, incomingUnit))];
             for (int i = 0; i < PVTWs.Length; i++)
             {
-                PVTWs[i].FitProperties();
-                PVDOs[i].FitProperties();
-                PVDGs[i].FitProperties();
+                PVTWs[i].FitProperties(γw0);
+                PVDOs[i].FitProperties(γo0);
+                PVDGs[i].FitProperties(γg0);
             }
 
             // Process SWOF and SGOF tables.
@@ -115,14 +124,6 @@ namespace ReservoirSimulator
             cr = Data.RockCompressibility;
             Prefr = Utility.Convert(Data.RockReferencePressure, "Pressure", incomingUnit, Units.FIELD);
             Er = P => Exp(cr * (P - Prefr));
-
-            const double SCF_PER_MSCF = 1000.0;
-            const double FT3_PER_BBL = 5.614583;
-
-            // DENSITIES -> Gradients [psi/ft * (rb/stb) for oil & water; psi/ft * (rb/Mscf) for gas]
-            γo0 = Utility.Convert(Data.SurfaceOilDensity, "Density", incomingUnit, Units.FIELD) / 144.0;
-            γw0 = Utility.Convert(Data.SurfaceWaterDensity, "Density", incomingUnit, Units.FIELD) / 144.0;
-            γg0 = (Utility.Convert(Data.SurfaceGasDensity, "Density", incomingUnit, Units.FIELD) / 144.0) * (SCF_PER_MSCF / FT3_PER_BBL);
 
             // MINPV: cells holding less pore volume than the deck's minimum are made inactive, as in ECLIPSE.
             // A copy of ACTNUM is changed, so the deck itself keeps what the user wrote.
@@ -425,6 +426,12 @@ namespace ReservoirSimulator
                 well.Pwf_n = well.PerfNatIndex.Select(m => Grids[m].Po_n).Average();
                 well.SaveResult(pwf: well.Pwf_n, qo: well.Qo_n, qw: well.Qw_n, qg: well.Qg_n);
             }
+
+            // Aquifers start from the equilibrated cells, so a defaulted aquifer pressure is in balance with the field.
+            Aquifers = FetkovichAquifer.Build(DATA, Grids, FetkovichAquifer.UnitsOf(DATA));
+            aquiferAt = FetkovichAquifer.ByCell(Aquifers);
+            foreach (var aquifer in Aquifers)
+                aquifer.Initialize(m => (Grids[m].Pw_n, Grids[m].γw(new ADiff<Vector6d>(Grids[m].Pw_n, default)).Value));
         }
         void InitialGuess(double[] xs, double dt, bool isRetry = false, bool wellEventOccurred = false)
         {
@@ -659,6 +666,19 @@ namespace ReservoirSimulator
                         JacValues[cOff.Diag[7]] += ResGas.Derivative[1];  // row_g, col_sw_i
                         JacValues[cOff.Diag[8]] += ResGas.Derivative[2];  // row_g, col_sg_i
 
+
+                        // Aquifer influx: water in from a connected aquifer (a source, so it is taken off the residual)
+                        if (aquiferAt.TryGetValue(m, out var connectedAquifers))
+                        {
+                            foreach (var (aquifer, weight, depth) in connectedAquifers)
+                            {
+                                var inflow = dt * aquifer.Influx(Pw_i, γw_i, weight, depth, dt);
+                                Res[row_w] -= inflow.Value;
+                                JacValues[cOff.Diag[3]] -= inflow.Derivative[0];
+                                JacValues[cOff.Diag[4]] -= inflow.Derivative[1];
+                                JacValues[cOff.Diag[5]] -= inflow.Derivative[2];
+                            }
+                        }
 
                         // Inter-cell flux loop
                         int faceCount = mgrid.Faces.Length;
@@ -1262,6 +1282,8 @@ namespace ReservoirSimulator
                     // Commit verified state n+1 -> n
                     t = tnp1;
                     Time.Add(t);
+                    foreach (var aquifer in Aquifers)
+                        aquifer.Accept(m => (Grids[m].Pw_np1, Grids[m].γw(new ADiff<Vector6d>(Grids[m].Pw_np1, default)).Value), dt);
                     foreach (var grid in Grids)
                     {
                         if (!grid.isActive) continue;

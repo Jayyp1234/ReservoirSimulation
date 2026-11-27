@@ -319,6 +319,16 @@ namespace EclipseDeckReader
                             Console.WriteLine($"      [Data] EQUIL: Loaded {deck.RawEquilTables.Count} region record(s).");
                             break;
 
+                        case "AQUFETP":
+                            ParseAqufetpBlock(tokens, ref i, deck);
+                            Console.WriteLine($"      [Data] AQUFETP: {deck.FetkovichAquifers.Count} Fetkovich aquifer(s).");
+                            break;
+
+                        case "AQUANCON":
+                            ParseAquanconBlock(tokens, ref i, deck);
+                            Console.WriteLine($"      [Data] AQUANCON: {deck.AquiferConnections.Count} aquifer connection record(s).");
+                            break;
+
                         case "EQUINUM":
                         case "EQLNUM":
                             var equilData = KeywordExtractor.ExtractIntArray(tokens, ref i);
@@ -1404,6 +1414,64 @@ namespace EclipseDeckReader
                 }
                 index++;   // the record's '/'
                 records.Add(record);
+            }
+            return records;
+        }
+
+        // AQUFETP: ID, datum depth, initial pressure, water volume, total compressibility, productivity index, PVTW table.
+        private void ParseAqufetpBlock(List<Token> tokens, ref int index, EclipseDataDeck deck)
+        {
+            foreach (var record in ReadRecordBlock(tokens, ref index))
+            {
+                if (record.Count < 6) continue;
+                deck.FetkovichAquifers.Add(new FetkovichAquiferRecord
+                {
+                    Id = (int)ParseOptionalDouble(record, 0, fallback: deck.FetkovichAquifers.Count + 1),
+                    DatumDepth = ParseOptionalDouble(record, 1),
+                    InitialPressure = record[2] == "1*" ? null : ParseOptionalDouble(record, 2),
+                    WaterVolume = ParseOptionalDouble(record, 3),
+                    TotalCompressibility = ParseOptionalDouble(record, 4),
+                    ProductivityIndex = ParseOptionalDouble(record, 5),
+                    PvtwTable = (int)ParseOptionalDouble(record, 6, fallback: 1),
+                });
+            }
+        }
+
+        // AQUANCON: ID, I1 I2 J1 J2 K1 K2, face, influx coefficient, influx multiplier, connect internal faces.
+        private void ParseAquanconBlock(List<Token> tokens, ref int index, EclipseDataDeck deck)
+        {
+            foreach (var record in ReadRecordBlock(tokens, ref index))
+            {
+                if (record.Count < 8) continue;
+                deck.AquiferConnections.Add(new AquiferConnectionRecord
+                {
+                    AquiferId = (int)ParseOptionalDouble(record, 0, fallback: 1),
+                    I1 = (int)ParseOptionalDouble(record, 1), I2 = (int)ParseOptionalDouble(record, 2),
+                    J1 = (int)ParseOptionalDouble(record, 3), J2 = (int)ParseOptionalDouble(record, 4),
+                    K1 = (int)ParseOptionalDouble(record, 5), K2 = (int)ParseOptionalDouble(record, 6),
+                    Face = record[7].ToUpperInvariant(),
+                    InfluxCoefficient = record.Count > 8 && record[8] != "1*" ? ParseOptionalDouble(record, 8) : null,
+                    InfluxMultiplier = ParseOptionalDouble(record, 9, fallback: 1.0),
+                    AllowInternalFaces = record.Count > 10 && record[10].StartsWith("Y", StringComparison.OrdinalIgnoreCase),
+                });
+            }
+        }
+
+        // The records of a keyword, each ended by '/', up to the lone '/' (or the next keyword) that ends the keyword.
+        private static List<List<string>> ReadRecordBlock(List<Token> tokens, ref int index)
+        {
+            var records = new List<List<string>>();
+            while (index < tokens.Count)
+            {
+                ClearLeadingLayoutSpacers(tokens, ref index);
+                if (index >= tokens.Count) break;
+                if (tokens[index].Type == TokenType.Slash || tokens[index].Content.ToString() == "/")
+                {
+                    index++;
+                    break;
+                }
+                if (IsKeywordLine(tokens, index)) break;
+                records.Add(ReadRecordTokensUntilSlash(tokens, ref index));
             }
             return records;
         }

@@ -62,6 +62,7 @@ namespace ReservoirSimulator
             set 
             { 
                 pvtw = value;
+                γw0 = pvtw.Result.γw0;
                 Bw = Pw => pvtw.Result.EvaluateBw(Pw);
                 μw = Pw => pvtw.Result.EvaluateMuw(Pw);
                 γw = Pw => γw0 / pvtw.Result.EvaluateBw(Pw);
@@ -73,6 +74,7 @@ namespace ReservoirSimulator
             set
             { 
                 pvdo = value;
+                γo0 = pvdo.Result.γo0;
                 Bo = Po => pvdo.Result.EvaluateBo(Po);
                 μo = Po => pvdo.Result.EvaluateMuo(Po);
                 γo = Po => γo0 / pvdo.Result.EvaluateBo(Po);
@@ -84,9 +86,10 @@ namespace ReservoirSimulator
             set 
             { 
                 pvdg = value;
+                γg0 = pvdg.Result.γg0;
                 Bg = Po => pvdg.Result.EvaluateBg(Po);
                 μg = Po => pvdg.Result.EvaluateMug(Po);
-                γg = Po => pvdg.Result.γg0 / pvdg.Result.EvaluateBg(Po);
+                γg = Po => γg0 / pvdg.Result.EvaluateBg(Po);
             } 
         }
         public PVTOAnalysis PVTO
@@ -95,6 +98,7 @@ namespace ReservoirSimulator
             set
             {
                 pvto = value;
+                γo0 = pvto.Result.γo0;
                 BoSat = Rs => pvto.Result.EvaluateBo(Rs);
                 RsSat = Po => pvto.Result.EvaluateRs(Po);
                 Pb = Rs => pvto.Result.EvaluateBubblePointPressure(Rs);
@@ -106,6 +110,7 @@ namespace ReservoirSimulator
             set 
             { 
                 pvtg = value;
+                γg0 = pvtg.Result.γg0;
                 BgSat = Pg => pvtg.Result.EvaluateBg(Pg);
                 RvSat = Pg => pvtg.Result.EvaluateRv(Pg);
                 Pd = Rv => pvtg.Result.EvaluateDewPointPressure(Rv);
@@ -153,7 +158,8 @@ namespace ReservoirSimulator
         {
             var krow = Krow(sw);
             var krog = Krog(sg);
-            var swEff = sw;
+            var swEff = swof is null ? sw : sw - swof.Result.Swi;
+            if (swEff.Value < 0.0) swEff = 0.0 * sw;
             var denom = swEff + sg;
 
             // When Sg == 0 and Sw == Swi, Kro = Krow(Swi) = 1.0
@@ -165,7 +171,7 @@ namespace ReservoirSimulator
         public ADiff<T> γopr(ADiff<T> p, ADiff<T> rs)
         {
             var (bo, rsEff) = EvaluateOilState(p, rs);
-            return (γo0 + 178.1076 * rsEff * γg0) / bo;
+            return (γo0 + rsEff * γg0) / bo;
         }
         public ADiff<T> μopr(ADiff<T> p, ADiff<T> rs)
         {
@@ -180,7 +186,7 @@ namespace ReservoirSimulator
         public ADiff<T> γgpr(ADiff<T> p, ADiff<T> rv)
         {
             var (bg, rvEff) = EvaluateGasState(p, rv);
-            return (178.1076 * γg0 + rvEff * γo0) / bg;
+            return (γg0 + rvEff * γo0) / bg;
         }
         public ADiff<T> μgpr(ADiff<T> p, ADiff<T> rv)
         {

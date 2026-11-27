@@ -34,6 +34,8 @@ namespace ReservoirSimulator
         List<Grid<Vector4d>> ActiveGrids;
         public List<Well<Vector4d>> Wells;
         Aquifer Aquifer;
+        public List<FetkovichAquifer> Aquifers = [];
+        Dictionary<int, (FetkovichAquifer Aquifer, double Weight, double Depth)[]> aquiferAt = [];
         Dictionary<(int, int), EQUILPressureDepth> EquilPVTCombinations = [];
         EclipseDataDeck DATA;
         PVTWAnalysis[] PVTWs;
@@ -277,6 +279,12 @@ namespace ReservoirSimulator
                 well.Pwf_n = well.PerfNatIndex.Select(m => Grids[m].Po_n).Average();
                 well.SaveResult(pwf: well.Pwf_n, qo: well.Qo_n, qw: well.Qw_n);
             }
+
+            // Aquifers start from the equilibrated cells, so a defaulted aquifer pressure is in balance with the field.
+            Aquifers = FetkovichAquifer.Build(DATA, Grids, FetkovichAquifer.UnitsOf(DATA));
+            aquiferAt = FetkovichAquifer.ByCell(Aquifers);
+            foreach (var aquifer in Aquifers)
+                aquifer.Initialize(m => (Grids[m].Pw_n, Grids[m].γw(new ADiff<Vector4d>(Grids[m].Pw_n, default)).Value));
         }
         void InitialGuess(double[] xs, double dt, bool isRetry = false, bool wellEventOccurred = false)
         {
@@ -473,6 +481,18 @@ namespace ReservoirSimulator
                         JacValues[cOff.Diag[2]] += ResWater.Derivative[0]; // row_w, col_p_i
                         JacValues[cOff.Diag[3]] += ResWater.Derivative[1]; // row_w, col_sw_i
 
+
+                        // Aquifer influx: water in from a connected aquifer (a source, so it is taken off the residual)
+                        if (aquiferAt.TryGetValue(m, out var connectedAquifers))
+                        {
+                            foreach (var (aquifer, weight, depth) in connectedAquifers)
+                            {
+                                var inflow = dt * aquifer.Influx(Pw_i, γw_i, weight, depth, dt);
+                                Res[row_w] -= inflow.Value;
+                                JacValues[cOff.Diag[2]] -= inflow.Derivative[0];
+                                JacValues[cOff.Diag[3]] -= inflow.Derivative[1];
+                            }
+                        }
 
                         // Inter-cell flux loop
                         int faceCount = mgrid.Faces.Length;
@@ -1003,6 +1023,8 @@ namespace ReservoirSimulator
                     // Commit verified state n+1 -> n
                     t = tnp1;
                     Time.Add(t);
+                    foreach (var aquifer in Aquifers)
+                        aquifer.Accept(m => (Grids[m].Pw_np1, Grids[m].γw(new ADiff<Vector4d>(Grids[m].Pw_np1, default)).Value), dt);
                     // The next step loads the deck's controls and completions again. Without this, a BHP switch above
                     // left the flag false for good, and later WCONPROD/WCONINJE/COMPDAT records were never loaded.
                     // (A switch to BHP still carries over: UpdateControl resets the mode only for a new record.)

@@ -70,6 +70,10 @@ namespace EclipseDeckReader
         public Dictionary<string, FaultRecord> Faults { get; } = new(StringComparer.OrdinalIgnoreCase);
         public List<MultregtRecord> MultregtRecords { get; } = [];
 
+        // Aquifers (AQUFETP, AQUANCON)
+        public List<FetkovichAquiferRecord> FetkovichAquifers { get; } = [];
+        public List<AquiferConnectionRecord> AquiferConnections { get; } = [];
+
         // 11. Dynamic Well Networks Block
         public Dictionary<string, WellData> Wells { get; } = new(StringComparer.OrdinalIgnoreCase);
 

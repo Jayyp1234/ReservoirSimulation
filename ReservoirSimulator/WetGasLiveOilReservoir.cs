@@ -96,15 +96,22 @@ namespace ReservoirSimulator
             Grids = Zcorn is not null ? Utility.ProcessGrid<Vector6d>(Nx, Ny, Nz, Coord, Zcorn, Φ, Kx, Ky, Kz, ntg, multpv) :
                 Utility.ProcessGrid<Vector6d>(Nx, Ny, Nz, Dx, Dy, Dz, zTop, Φ, Kx, Ky, Kz, ntg, multpv);
 
+            const double SCF_PER_MSCF = 1000.0;
+            const double FT3_PER_BBL = 5.614583;
+            // DENSITIES -> Gradients [psi/ft * (rb/stb) for oil & water; psi/ft * (rb/Mscf) for gas]
+            γo0 = Utility.Convert(DATA.SurfaceOilDensity, "Density", incomingUnit, Units.FIELD) / 144.0;
+            γw0 = Utility.Convert(DATA.SurfaceWaterDensity, "Density", incomingUnit, Units.FIELD) / 144.0;
+            γg0 = (Utility.Convert(DATA.SurfaceGasDensity, "Density", incomingUnit, Units.FIELD) / 144.0) * (SCF_PER_MSCF / FT3_PER_BBL);
+
             // Process PVTW, PVTO, and PVTG tables.
             PVTWs = [.. DATA.RawPvtwTables.Select(pvtw => new PVTWAnalysis(pvtw, incomingUnit))];
             PVTOs = [.. DATA.RawPvtoTables.Select(pvto => new PVTOAnalysis(pvto, incomingUnit))];
             PVTGs = [.. DATA.RawPvtgTables.Select(pvtg => new PVTGAnalysis(pvtg, incomingUnit))];
             for (int i = 0; i < PVTWs.Length; i++)
             {
-                PVTWs[i].FitProperties();
-                PVTOs[i].FitProperties();
-                PVTGs[i].FitProperties();
+                PVTWs[i].FitProperties(γw0);
+                PVTOs[i].FitProperties(γo0);
+                PVTGs[i].FitProperties(γg0);
             }
 
             // Process SWOF and SGOF tables.
@@ -127,14 +134,6 @@ namespace ReservoirSimulator
             cr = DATA.RockCompressibility;
             Prefr = Utility.Convert(DATA.RockReferencePressure, "Pressure", incomingUnit, Units.FIELD);
             Er = P => Exp(cr * (P - Prefr));
-
-            const double SCF_PER_MSCF = 1000.0;
-            const double FT3_PER_BBL = 5.614583;
-
-            // DENSITIES -> Gradients [psi/ft * (rb/stb) for oil & water; psi/ft * (rb/Mscf) for gas]
-            γo0 = Utility.Convert(DATA.SurfaceOilDensity, "Density", incomingUnit, Units.FIELD) / 144.0;
-            γw0 = Utility.Convert(DATA.SurfaceWaterDensity, "Density", incomingUnit, Units.FIELD) / 144.0;
-            γg0 = (Utility.Convert(DATA.SurfaceGasDensity, "Density", incomingUnit, Units.FIELD) / 144.0) * (SCF_PER_MSCF / FT3_PER_BBL);
 
             // MINPV: cells holding less pore volume than the deck's minimum are made inactive, as in ECLIPSE.
             // A copy of ACTNUM is changed, so the deck itself keeps what the user wrote.
@@ -306,13 +305,13 @@ namespace ReservoirSimulator
                     double γopr(double P, double RsVal)
                     {
                         var (bo, rsEff) = EvaluateOilState(P, RsVal);
-                        return (γo0 + 178.1076 * rsEff * γg0) / bo;
+                        return (γo0 + rsEff * γg0) / bo;
                     }
 
                     double γgpr(double P, double RvVal)
                     {
                         var (bg, rvEff) = EvaluateGasState(P, RvVal);
-                        return (178.1076 * γg0 + rvEff * γo0) / bg;
+                        return (γg0 + rvEff * γo0) / bg;
                     }
 
                     double Rszp(double Z, double P)

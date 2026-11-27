@@ -124,7 +124,7 @@ namespace ReservoirSimulator
 
         public PvtgResult Result { get; private set; }
 
-        public void FitProperties()
+        public void FitProperties(double γg0)
         {
             if (saturatedPoints.Count < 2)
             {
@@ -202,7 +202,7 @@ namespace ReservoirSimulator
                 }
             }
 
-            Result = new PvtgResult(
+            Result = new PvtgResult(γg0,
                 lnPressureForRv.Count >= 2 ? Exp(bRv) : 0.0, mRv, rSqRv,
                 Exp(bBg), -mBg, rSqBg,
                 Exp(bVisc), mVisc, rSqVisc,
